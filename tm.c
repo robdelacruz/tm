@@ -17,34 +17,33 @@
 #include "clib.h"
 #include "cnet.h"
 
-#define TM_PORT "8001"
+#define BIND_PORT "8002"
+#define UDP_LISTEN_PORT "8001"
 
 #define MSGNO(bs) (*((u8 *)bs))
-#define HELLO 1
-#define GOODBYE 2
+#define PING 1
 
+// PING
 typedef struct {
     u8 msgno;
     String alias;
     String group;
-} HostSignal;
+    String pingtext;
+} PingMsg;
 
-char *get_ipaddr(struct sockaddr *sa);
-
-void broadcast_hello(Arena scratch);
+void broadcast_whosthere(Arena scratch);
 gpointer THREAD_wait_for_udp_messages(gpointer data);
 gpointer THREAD_wait_for_tcp_messages(gpointer data);
 
-char *GHostPort;
+char *GBindPort = BIND_PORT;
 
 int main(int argc, char *argv[]) {
     Arena scratch = ArenaNew(1024);
 
     gtk_init(&argc, &argv);
 
-    GHostPort = TM_PORT;
     if (argc > 1)
-        GHostPort = argv[1];
+        GBindPort = argv[1];
 
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(w), 275,425);
@@ -56,7 +55,7 @@ int main(int argc, char *argv[]) {
 
     g_thread_new("", THREAD_wait_for_udp_messages, NULL);
     g_thread_new("", THREAD_wait_for_tcp_messages, NULL);
-    broadcast_hello(scratch);
+    broadcast_whosthere(scratch);
 
     gtk_main();
     return 0;
@@ -73,8 +72,65 @@ char *get_ipaddr(struct sockaddr *sa) {
     }
     return ipaddr;
 }
+void get_ipaddr2(struct sockaddr *sa, String *outstr) {
+    char ipaddr[INET6_ADDRSTRLEN+1];
+    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
+    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        StringAssign(outstr, "");
+        return;
+    }
+    StringAssign(outstr, ipaddr);
+}
 
-void broadcast_hello(Arena scratch) {
+// HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
+// hostaddr = (sin_port << 32) + sin_addr
+typedef u64 HostAddr;
+
+in_port_t sockaddr_port_from_hostaddr(HostAddr hostaddr) {
+    return (in_port_t) (hostaddr >> 32);
+}
+struct in_addr sockaddr_addr_from_hostaddr(HostAddr hostaddr) {
+    struct in_addr sin_addr;
+    sin_addr.s_addr = (u32) (hostaddr & 0x00000000FFFFFFFF);
+    return sin_addr;
+}
+
+// Conversion from HostAddr <--> sockaddr_in
+HostAddr hostaddr_from_sockaddr(struct sockaddr_in *sa) {
+    return ((u64) sa->sin_port << 32) + sa->sin_addr.s_addr;
+}
+struct sockaddr_in sockaddr_in_from_hostaddr(HostAddr hostaddr) {
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = sockaddr_port_from_hostaddr(hostaddr);
+    sa.sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    return sa;
+}
+
+void get_ipaddr3(HostAddr hostaddr, String *outstr) {
+    char ipaddr[INET6_ADDRSTRLEN+1];
+    struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        StringAssign(outstr, "");
+        return;
+    }
+    StringAssign(outstr, ipaddr);
+}
+char * get_ipaddr4(HostAddr hostaddr) {
+    static char ipaddr[INET6_ADDRSTRLEN+1];
+    struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        return "";
+    }
+    return ipaddr;
+}
+
+
+void broadcast_whosthere(Arena scratch) {
     int z;
     struct addrinfo hints = {0};
     hints.ai_family = AF_INET;
@@ -82,7 +138,7 @@ void broadcast_hello(Arena scratch) {
     hints.ai_flags = AI_PASSIVE;
 
     struct addrinfo *hostai;
-    z = getaddrinfo(NULL, GHostPort, &hints, &hostai);
+    z = getaddrinfo(NULL, GBindPort, &hints, &hostai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
         exit(1);
@@ -91,6 +147,11 @@ void broadcast_hello(Arena scratch) {
     int hostfd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
     if (hostfd == -1) {
         fprintf(stderr, "socket(): %s\n", strerror(errno));
+        exit(1);
+    }
+    z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "broadcast_whosthere bind(): %s\n", strerror(errno));
         exit(1);
     }
     freeaddrinfo(hostai);
@@ -103,17 +164,17 @@ void broadcast_hello(Arena scratch) {
     }
 
     struct addrinfo *broadcastai;
-    z = getaddrinfo("255.255.255.255", GHostPort, &hints, &broadcastai);
+    z = getaddrinfo("255.255.255.255", UDP_LISTEN_PORT, &hints, &broadcastai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
         exit(1);
     }
 
     Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s", HELLO, "rob", "bsdg");
+    NetPack(&buf, "%b%s%s%s", PING, "rob", "bsdg", "whosthere");
     z = sendto(hostfd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
     if (z == -1) {
-        fprintf(stderr, "broadcast_hello() sendto(hello): %s\n", strerror(errno));
+        fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));
         exit(1);
     }
 
@@ -130,7 +191,7 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
     hints.ai_flags = AI_PASSIVE;
 
     struct addrinfo *hostai;
-    z = getaddrinfo(NULL, GHostPort, &hints, &hostai);
+    z = getaddrinfo(NULL, UDP_LISTEN_PORT, &hints, &hostai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
         exit(1);
@@ -143,7 +204,7 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
     }
     z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
     if (z == -1) {
-        fprintf(stderr, "bind(): %s\n", strerror(errno));
+        fprintf(stderr, "wait_for_udp bind(): %s\n", strerror(errno));
         exit(1);
     }
     freeaddrinfo(hostai);
@@ -184,11 +245,18 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
             }
 
             u8 msgno = MSGNO(buf);
-            if (msgno == HELLO) {
+            if (msgno == PING) {
                 String alias = StringNew0(&tscratch);
                 String group = StringNew0(&tscratch);
-                NetUnpack(buf, z, "%b%s%s", &msgno, &alias, &group);
-                printf("** HELLO alias: '%s' group: '%s' **\n", CSTR(alias), CSTR(group));
+                String pingtext = StringNew0(&tscratch);
+                NetUnpack(buf, z, "%b%s%s%s", &msgno, &alias, &group, &pingtext);
+                printf("** PING alias: '%s' group: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(group), CSTR(pingtext));
+
+                if (((struct sockaddr *)&fromaddr)->sa_family == AF_INET) {
+                    struct sockaddr_in *sa = (struct sockaddr_in *) &fromaddr;
+                    HostAddr hostaddr = hostaddr_from_sockaddr(sa);
+                    printf("hostaddr: %llx ipaddr: '%s' port: %d\n", hostaddr, get_ipaddr4(hostaddr), ntohs(sockaddr_port_from_hostaddr(hostaddr)));
+                }
             }
         }
     }
@@ -203,7 +271,7 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
     hints.ai_flags = AI_PASSIVE;
 
     struct addrinfo *hostai;
-    z = getaddrinfo(NULL, GHostPort, &hints, &hostai);
+    z = getaddrinfo(NULL, GBindPort, &hints, &hostai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
         exit(1);
@@ -249,7 +317,7 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
         tmp_readfds = readfds;
         tmp_writefds = writefds;
 
-        printf("Listening for TCP messages...\n");
+        printf("Listening for TCP messages on port %s...\n", GBindPort);
         z = select(maxfd+1, &tmp_readfds, &tmp_writefds, NULL, NULL);
         if (z == 0) // timeout
             continue;

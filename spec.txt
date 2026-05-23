@@ -1,0 +1,28 @@
+https://oneuptime.com/blog/post/2026-03-20-c-sockaddr-in-ipv4-addressing/view
+https://www.man7.org/linux/man-pages/man3/sockaddr.3type.html
+
+#include <netinet/in.h>
+
+struct sockaddr_in {
+    sa_family_t    sin_family;   /* AF_INET */
+    in_port_t      sin_port;     /* port in network byte order */
+    struct in_addr sin_addr;     /* IPv4 address */
+    unsigned char  sin_zero[8];  /* padding on many systems; zero the whole struct */
+};
+
+struct in_addr {
+    uint32_t s_addr; /* address in network byte order */
+};
+
+typedef uint16_t in_port_t;
+
+64-bit hex: 16 hex digits Ex. FFFF0000FFFF0000
+
+peer address = (in_port_t(16) << 32) + s_addr(32)
+
+in_port_t(16) = [peer address] >> 32
+s_addr(32) = [peer address] & 00000000FFFFFFFF
+s_addr(32) = (uint32) [peer address]
+
+typedef u64 HostAddr;
+
