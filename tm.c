@@ -23,6 +23,15 @@
 #define MSGNO(bs) (*((u8 *)bs))
 #define PING 1
 
+// HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
+// hostaddr = (sin_port << 32) + sin_addr
+typedef u64 HostAddr;
+
+HostAddr hostaddr_from_sockaddr(struct sockaddr_in *sa);
+struct sockaddr_in sockaddr_from_hostaddr(HostAddr hostaddr);
+char * get_ip_address(HostAddr hostaddr);
+void get_ip_address2(HostAddr hostaddr, String *outstr);
+
 // PING
 typedef struct {
     u8 msgno;
@@ -31,11 +40,18 @@ typedef struct {
     String pingtext;
 } PingMsg;
 
+struct addrinfo *get_self_addrinfo(char *port);
+int sockaddr_matches_addrinfo(struct sockaddr *sa, struct addrinfo *ai);
+
 void broadcast_whosthere(Arena scratch);
 gpointer THREAD_wait_for_udp_messages(gpointer data);
 gpointer THREAD_wait_for_tcp_messages(gpointer data);
+int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val);
 
 char *GBindPort = BIND_PORT;
+char *GMyAlias = "rob";
+char *GMyGroup = "bsdg";
+struct addrinfo *GMyAddrInfo=NULL;
 
 int main(int argc, char *argv[]) {
     Arena scratch = ArenaNew(1024);
@@ -44,6 +60,8 @@ int main(int argc, char *argv[]) {
 
     if (argc > 1)
         GBindPort = argv[1];
+
+    GMyAddrInfo = get_self_addrinfo(GBindPort);
 
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(w), 275,425);
@@ -61,46 +79,19 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-#define SIN_ADDR(sa) ( (void *) &((struct sockaddr_in *)sa)->sin_addr )
-#define SIN6_ADDR(sa) ( (void *) &((struct sockaddr_in6 *)sa)->sin6_addr )
-char *get_ipaddr(struct sockaddr *sa) {
-    static char ipaddr[INET6_ADDRSTRLEN+1];
-    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
-    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        return "";
-    }
-    return ipaddr;
-}
-void get_ipaddr2(struct sockaddr *sa, String *outstr) {
-    char ipaddr[INET6_ADDRSTRLEN+1];
-    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
-    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        StringAssign(outstr, "");
-        return;
-    }
-    StringAssign(outstr, ipaddr);
-}
-
-// HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
-// hostaddr = (sin_port << 32) + sin_addr
-typedef u64 HostAddr;
-
-in_port_t sockaddr_port_from_hostaddr(HostAddr hostaddr) {
-    return (in_port_t) (hostaddr >> 32);
-}
-struct in_addr sockaddr_addr_from_hostaddr(HostAddr hostaddr) {
-    struct in_addr sin_addr;
-    sin_addr.s_addr = (u32) (hostaddr & 0x00000000FFFFFFFF);
-    return sin_addr;
-}
-
 // Conversion from HostAddr <--> sockaddr_in
 HostAddr hostaddr_from_sockaddr(struct sockaddr_in *sa) {
     return ((u64) sa->sin_port << 32) + sa->sin_addr.s_addr;
 }
-struct sockaddr_in sockaddr_in_from_hostaddr(HostAddr hostaddr) {
+static in_port_t sockaddr_port_from_hostaddr(HostAddr hostaddr) {
+    return (in_port_t) (hostaddr >> 32);
+}
+static struct in_addr sockaddr_addr_from_hostaddr(HostAddr hostaddr) {
+    struct in_addr sin_addr;
+    sin_addr.s_addr = (u32) (hostaddr & 0x00000000FFFFFFFF);
+    return sin_addr;
+}
+struct sockaddr_in sockaddr_from_hostaddr(HostAddr hostaddr) {
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
@@ -109,7 +100,16 @@ struct sockaddr_in sockaddr_in_from_hostaddr(HostAddr hostaddr) {
     return sa;
 }
 
-void get_ipaddr3(HostAddr hostaddr, String *outstr) {
+char * get_ip_address(HostAddr hostaddr) {
+    static char ipaddr[INET6_ADDRSTRLEN+1];
+    struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        return "";
+    }
+    return ipaddr;
+}
+void get_ip_address2(HostAddr hostaddr, String *outstr) {
     char ipaddr[INET6_ADDRSTRLEN+1];
     struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
     if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
@@ -119,14 +119,35 @@ void get_ipaddr3(HostAddr hostaddr, String *outstr) {
     }
     StringAssign(outstr, ipaddr);
 }
-char * get_ipaddr4(HostAddr hostaddr) {
-    static char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
-    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        return "";
+
+struct addrinfo *get_self_addrinfo(char *port) {
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    struct addrinfo *hostai;
+    int z = getaddrinfo(NULL, port, &hints, &hostai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        exit(1);
     }
-    return ipaddr;
+    return hostai;
+}
+// Only ipv4 supported
+int sockaddr_matches_addrinfo(struct sockaddr *sa, struct addrinfo *ai) {
+    if (sa->sa_family != AF_INET)
+        return 0;
+    for (struct addrinfo *p = ai; p != NULL; p = p->ai_next) {
+        if (p->ai_family != AF_INET)
+            continue;
+        struct sockaddr_in *sa1 = (struct sockaddr_in *) sa;
+        struct sockaddr_in *sa2 = (struct sockaddr_in *) p->ai_addr;
+        printf("sa1 s_addr: %d sa2 s_addr: %d\n", sa1->sin_addr.s_addr, sa2->sin_addr.s_addr);
+        if (sa1->sin_addr.s_addr == sa2->sin_addr.s_addr && sa1->sin_port == sa2->sin_port)
+            return 1;
+    }
+    return 0;
 }
 
 
@@ -205,7 +226,9 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
     z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
     if (z == -1) {
         fprintf(stderr, "wait_for_udp bind(): %s\n", strerror(errno));
-        exit(1);
+        fprintf(stderr, "Unable to receive UDP messages.\n");
+        freeaddrinfo(hostai);
+        return NULL;
     }
     freeaddrinfo(hostai);
 
@@ -236,9 +259,10 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
 
         if (FD_ISSET(hostfd, &readfds)) {
             char buf[256];
-            struct sockaddr_storage fromaddr;
-            socklen_t fromaddr_len = sizeof(fromaddr);
-            z = recvfrom(hostfd, buf, sizeof(buf), 0, (struct sockaddr *)&fromaddr, &fromaddr_len);
+            struct sockaddr_storage sa_storage;
+            struct sockaddr *sa_peer = (struct sockaddr *) &sa_storage;
+            socklen_t sa_peer_len = sizeof(sa_storage);
+            z = recvfrom(hostfd, buf, sizeof(buf), 0, sa_peer, &sa_peer_len);
             if (z == -1) {
                 fprintf(stderr, "recvfrom(): %s\n", strerror(errno));
                 continue;
@@ -252,15 +276,91 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
                 NetUnpack(buf, z, "%b%s%s%s", &msgno, &alias, &group, &pingtext);
                 printf("** PING alias: '%s' group: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(group), CSTR(pingtext));
 
-                if (((struct sockaddr *)&fromaddr)->sa_family == AF_INET) {
-                    struct sockaddr_in *sa = (struct sockaddr_in *) &fromaddr;
-                    HostAddr hostaddr = hostaddr_from_sockaddr(sa);
-                    printf("hostaddr: %llx ipaddr: '%s' port: %d\n", hostaddr, get_ipaddr4(hostaddr), ntohs(sockaddr_port_from_hostaddr(hostaddr)));
+                if (sa_peer->sa_family != AF_INET) {
+                    fprintf(stderr, "Ignoring non-IPV4 UDP message.\n");
+                    continue;
                 }
+
+                HostAddr hostaddr = hostaddr_from_sockaddr((struct sockaddr_in *)sa_peer);
+                printf("hostaddr: %llx ipaddr: '%s' port: %d\n", hostaddr, get_ip_address(hostaddr), ntohs(sockaddr_port_from_hostaddr(hostaddr)));
+
+                // Ignore messages broadcast by myself
+                if (sockaddr_matches_addrinfo(sa_peer, GMyAddrInfo)) {
+                    fprintf(stderr, "Ignoring UDP message sent by myself.\n");
+                    continue;
+                }
+
+                /*
+                if (StringEquals(pingtext, "whosthere")) {
+                    ArenaReset(&tscratch);
+                    Buffer writebuf = BufferNew(&tscratch, 64);
+                    NetPack(&writebuf, "%b%s%s%s", PING, GMyAlias, GMyGroup, "hello");
+                    struct timeval timeout_val = {2, 0};
+                    fprintf(stderr, "Responding 'hello' to 'whosthere'\n");
+                    connect_and_send_message(sa_peer, &writebuf, &timeout_val);
+                }
+                */
             }
         }
     }
 
+}
+
+int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val) {
+    int z;
+
+    // Connect to destination
+    int destfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (destfd == -1) {
+        fprintf(stderr, "connect_and_send_message socket(): %s\n", strerror(errno));
+        return -1;
+    }
+    int yes=1;
+    z = setsockopt(destfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        return -1;
+    }
+    z = connect(destfd, sa_dest, sizeof(struct sockaddr));
+    if (z == -1) {
+        fprintf(stderr, "connect_and_send_message connect(): %s\n", strerror(errno));
+        return -1;
+    }
+
+    z = NetSend(destfd, sendbuf);
+    if (z == -1) {
+        return -1;
+    }
+    if (z == 0)
+        return 0;
+
+    fd_set writefds;
+    FD_ZERO(&writefds);
+    FD_SET(destfd, &writefds);
+
+    while (1) {
+        z = select(destfd+1, NULL, &writefds, NULL, timeout_val);
+        if (z == 0) {
+            fprintf(stderr, "connect_and_send_message select() timeout\n");
+            return -1;
+        }
+        if (z == -1 && errno == EINTR)
+            continue;
+        if (z == -1) {
+            fprintf(stderr, "connect_and_send_message select(): %s\n", strerror(errno));
+            return -1;
+        }
+        if (FD_ISSET(destfd, &writefds)) {
+            z = NetSend(destfd, sendbuf);
+            if (z == 0)
+                break;
+            if (z == -1) {
+                fprintf(stderr, "connect_and_send_message() network error during send\n");
+                return -1;
+            }
+        }
+    }
+    return 0;
 }
 
 gpointer THREAD_wait_for_tcp_messages(gpointer data) {
@@ -285,7 +385,9 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
     z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
     if (z == -1) {
         fprintf(stderr, "bind(): %s\n", strerror(errno));
-        exit(1);
+        fprintf(stderr, "Unable to receive TCP messages.\n");
+        freeaddrinfo(hostai);
+        return NULL;
     }
     freeaddrinfo(hostai);
 
@@ -303,10 +405,8 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
         exit(1);
     }
 
-    fd_set readfds, writefds;
-    fd_set tmp_readfds, tmp_writefds;
+    fd_set readfds, tmp_readfds;
     FD_ZERO(&readfds);
-    FD_ZERO(&writefds);
     FD_SET(hostfd, &readfds);
     int maxfd = hostfd;
 
@@ -315,10 +415,9 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
     while (1) {
         ArenaReset(&tscratch);
         tmp_readfds = readfds;
-        tmp_writefds = writefds;
 
-        printf("Listening for TCP messages on port %s...\n", GBindPort);
-        z = select(maxfd+1, &tmp_readfds, &tmp_writefds, NULL, NULL);
+//        printf("Listening for TCP messages on port %s...\n", GBindPort);
+        z = select(maxfd+1, &tmp_readfds, NULL, NULL, NULL);
         if (z == 0) // timeout
             continue;
         if (z == -1 && errno == EINTR)

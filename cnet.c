@@ -161,7 +161,7 @@ int OpenConnectSocket(char *host, char *port, int backlog, struct sockaddr *sa) 
 
 #define SIN_ADDR(sa) ( (void *) &((struct sockaddr_in *)sa)->sin_addr )
 #define SIN6_ADDR(sa) ( (void *) &((struct sockaddr_in6 *)sa)->sin6_addr )
-char *GetTextIPAddress(struct sockaddr *sa) {
+char *GetIPAddress(struct sockaddr *sa) {
     static char ipaddr[INET6_ADDRSTRLEN+1];
     void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
     if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
@@ -169,6 +169,17 @@ char *GetTextIPAddress(struct sockaddr *sa) {
         return "";
     }
     return ipaddr;
+}
+
+void GetIPAddress2(struct sockaddr *sa, String *outstr) {
+    char ipaddr[INET6_ADDRSTRLEN+1];
+    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
+    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        StringAssign(outstr, "");
+        return;
+    }
+    StringAssign(outstr, ipaddr);
 }
 
 // Nonblocking socket read into buf.
