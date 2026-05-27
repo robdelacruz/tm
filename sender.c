@@ -5,6 +5,9 @@
 #include <errno.h>
 #include <assert.h>
 #include <signal.h>
+#include <limits.h>
+#include <crypt.h>
+#include <time.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -28,20 +31,46 @@
 typedef struct {
     u8 msgno;
     String alias;
-    String group;
+    String hostname;
     String pingtext;
 } PingMsg;
 
 void broadcast_whosthere(Arena scratch);
+String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
 
 char *GBindPort = BIND_PORT;
+Arena GArena;
+Arena GScratch;
+String GAlias;
+String GHostname;
+String GSignature;
 
 int main(int argc, char *argv[]) {
-    Arena scratch = ArenaNew(1024);
+    GArena = ArenaNew(1024);
+    GScratch = ArenaNew(1024);
 
     if (argc > 1)
         GBindPort = argv[1];
-    broadcast_whosthere(scratch);
+
+    char buf[HOST_NAME_MAX];
+    int z = gethostname(buf, sizeof(buf));
+    if (z == -1) {
+        fprintf(stderr, "gethostname() %s\n", strerror(errno));
+        exit(1);
+    }
+    buf[HOST_NAME_MAX-1] = 0;
+    GHostname = StringNew(&GArena, buf);
+
+    char *alias = getlogin();
+    if (alias == NULL)
+        alias = "noname";
+    GAlias = StringNew(&GArena, alias);
+    StringAssign(&GAlias, "rob2");
+
+    GSignature = GetSignature(&GArena, GScratch, GAlias, GHostname);
+    printf("GSignature: '%s'\n", CSTR(GSignature));
+
+    broadcast_whosthere(GScratch);
 
     return 0;
 }
@@ -87,7 +116,7 @@ void broadcast_whosthere(Arena scratch) {
     }
 
     Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s%s", PING, "rob", "bsdg", "whosthere");
+    NetPack(&buf, "%b%s%s%s%s", PING, CSTR(GSignature), CSTR(GAlias), CSTR(GHostname), "whosthere");
     z = sendto(hostfd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
     if (z == -1) {
         fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));
@@ -97,5 +126,20 @@ void broadcast_whosthere(Arena scratch) {
     freeaddrinfo(broadcastai);
 
     close(hostfd);
+}
+
+String GetSignature(Arena *arena, Arena scratch, String alias, String hostname) {
+    static char *CRYPTSALT = "salt1234567890";
+    srand(time(NULL));
+    String phrase = StringFormat(&scratch, "%s%s%d", CSTR(GAlias), CSTR(GHostname), rand());
+    if (phrase.len > CRYPT_MAX_PASSPHRASE_SIZE)
+        phrase.bs[CRYPT_MAX_PASSPHRASE_SIZE] = 0;
+
+    struct crypt_data data;
+    memset(&data, 0, sizeof(data));
+    char *pz = crypt_r(CSTR(phrase), CRYPTSALT, &data);
+    assert(pz != NULL);
+
+    return StringNew(arena, data.output);
 }
 

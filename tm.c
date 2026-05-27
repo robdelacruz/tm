@@ -7,6 +7,9 @@
 #include <errno.h>
 #include <assert.h>
 #include <signal.h>
+#include <limits.h>
+#include <crypt.h>
+#include <time.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -23,45 +26,64 @@
 #define MSGNO(bs) (*((u8 *)bs))
 #define PING 1
 
+// PING
+typedef struct {
+    u8 msgno;
+    String signature;
+    String alias;
+    String hostname;
+    String pingtext;
+} PingMsg;
+
 // HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
 // hostaddr = (sin_port << 32) + sin_addr
 typedef u64 HostAddr;
 
-HostAddr hostaddr_from_sockaddr(struct sockaddr_in *sa);
-struct sockaddr_in sockaddr_from_hostaddr(HostAddr hostaddr);
-char * get_ip_address(HostAddr hostaddr);
+HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa);
+struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr);
+
+char *get_ip_address(HostAddr hostaddr);
 void get_ip_address2(HostAddr hostaddr, String *outstr);
-
-// PING
-typedef struct {
-    u8 msgno;
-    String alias;
-    String group;
-    String pingtext;
-} PingMsg;
-
-struct addrinfo *get_self_addrinfo(char *port);
-int sockaddr_matches_addrinfo(struct sockaddr *sa, struct addrinfo *ai);
 
 void broadcast_whosthere(Arena scratch);
 gpointer THREAD_wait_for_udp_messages(gpointer data);
 gpointer THREAD_wait_for_tcp_messages(gpointer data);
 int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val);
 
+String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
+
 char *GBindPort = BIND_PORT;
-char *GMyAlias = "rob";
-char *GMyGroup = "bsdg";
-struct addrinfo *GMyAddrInfo=NULL;
+Arena GArena;
+Arena GScratch;
+String GAlias;
+String GHostname;
+String GSignature;
 
 int main(int argc, char *argv[]) {
-    Arena scratch = ArenaNew(1024);
+    GArena = ArenaNew(1024);
+    GScratch = ArenaNew(1024);
 
     gtk_init(&argc, &argv);
 
     if (argc > 1)
         GBindPort = argv[1];
 
-    GMyAddrInfo = get_self_addrinfo(GBindPort);
+    char buf[HOST_NAME_MAX];
+    int z = gethostname(buf, sizeof(buf));
+    if (z == -1) {
+        fprintf(stderr, "gethostname() %s\n", strerror(errno));
+        exit(1);
+    }
+    buf[HOST_NAME_MAX-1] = 0;
+    GHostname = StringNew(&GArena, buf);
+
+    char *alias = getlogin();
+    if (alias == NULL)
+        alias = "noname";
+    GAlias = StringNew(&GArena, alias);
+
+    GSignature = GetSignature(&GArena, GScratch, GAlias, GHostname);
+    printf("GSignature: '%s'\n", CSTR(GSignature));
 
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(w), 275,425);
@@ -73,36 +95,36 @@ int main(int argc, char *argv[]) {
 
     g_thread_new("", THREAD_wait_for_udp_messages, NULL);
     g_thread_new("", THREAD_wait_for_tcp_messages, NULL);
-    broadcast_whosthere(scratch);
+    broadcast_whosthere(GScratch);
 
     gtk_main();
     return 0;
 }
 
 // Conversion from HostAddr <--> sockaddr_in
-HostAddr hostaddr_from_sockaddr(struct sockaddr_in *sa) {
+HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa) {
     return ((u64) sa->sin_port << 32) + sa->sin_addr.s_addr;
 }
-static in_port_t sockaddr_port_from_hostaddr(HostAddr hostaddr) {
+static in_port_t HostAddr_port(HostAddr hostaddr) {
     return (in_port_t) (hostaddr >> 32);
 }
-static struct in_addr sockaddr_addr_from_hostaddr(HostAddr hostaddr) {
+static struct in_addr HostAddr_addr(HostAddr hostaddr) {
     struct in_addr sin_addr;
     sin_addr.s_addr = (u32) (hostaddr & 0x00000000FFFFFFFF);
     return sin_addr;
 }
-struct sockaddr_in sockaddr_from_hostaddr(HostAddr hostaddr) {
+struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr) {
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
-    sa.sin_port = sockaddr_port_from_hostaddr(hostaddr);
-    sa.sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    sa.sin_port = HostAddr_port(hostaddr);
+    sa.sin_addr = HostAddr_addr(hostaddr);
     return sa;
 }
 
-char * get_ip_address(HostAddr hostaddr) {
+char *get_ip_address(HostAddr hostaddr) {
     static char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    struct in_addr sin_addr = HostAddr_addr(hostaddr);
     if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
         fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
         return "";
@@ -111,7 +133,7 @@ char * get_ip_address(HostAddr hostaddr) {
 }
 void get_ip_address2(HostAddr hostaddr, String *outstr) {
     char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = sockaddr_addr_from_hostaddr(hostaddr);
+    struct in_addr sin_addr = HostAddr_addr(hostaddr);
     if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
         fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
         StringAssign(outstr, "");
@@ -120,36 +142,20 @@ void get_ip_address2(HostAddr hostaddr, String *outstr) {
     StringAssign(outstr, ipaddr);
 }
 
-struct addrinfo *get_self_addrinfo(char *port) {
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_flags = AI_PASSIVE;
+String GetSignature(Arena *arena, Arena scratch, String alias, String hostname) {
+    static char *CRYPTSALT = "salt1234567890";
+    srand(time(NULL));
+    String phrase = StringFormat(&scratch, "%s%s%d", CSTR(GAlias), CSTR(GHostname), rand());
+    if (phrase.len > CRYPT_MAX_PASSPHRASE_SIZE)
+        phrase.bs[CRYPT_MAX_PASSPHRASE_SIZE] = 0;
 
-    struct addrinfo *hostai;
-    int z = getaddrinfo(NULL, port, &hints, &hostai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        exit(1);
-    }
-    return hostai;
-}
-// Only ipv4 supported
-int sockaddr_matches_addrinfo(struct sockaddr *sa, struct addrinfo *ai) {
-    if (sa->sa_family != AF_INET)
-        return 0;
-    for (struct addrinfo *p = ai; p != NULL; p = p->ai_next) {
-        if (p->ai_family != AF_INET)
-            continue;
-        struct sockaddr_in *sa1 = (struct sockaddr_in *) sa;
-        struct sockaddr_in *sa2 = (struct sockaddr_in *) p->ai_addr;
-        printf("sa1 s_addr: %d sa2 s_addr: %d\n", sa1->sin_addr.s_addr, sa2->sin_addr.s_addr);
-        if (sa1->sin_addr.s_addr == sa2->sin_addr.s_addr && sa1->sin_port == sa2->sin_port)
-            return 1;
-    }
-    return 0;
-}
+    struct crypt_data data;
+    memset(&data, 0, sizeof(data));
+    char *pz = crypt_r(CSTR(phrase), CRYPTSALT, &data);
+    assert(pz != NULL);
 
+    return StringNew(arena, data.output);
+}
 
 void broadcast_whosthere(Arena scratch) {
     int z;
@@ -192,7 +198,7 @@ void broadcast_whosthere(Arena scratch) {
     }
 
     Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s%s", PING, "rob", "bsdg", "whosthere");
+    NetPack(&buf, "%b%s%s%s%s", PING, CSTR(GSignature), CSTR(GAlias), CSTR(GHostname), "whosthere");
     z = sendto(hostfd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
     if (z == -1) {
         fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));
@@ -270,36 +276,33 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
 
             u8 msgno = MSGNO(buf);
             if (msgno == PING) {
+                String signature = StringNew0(&tscratch);
                 String alias = StringNew0(&tscratch);
-                String group = StringNew0(&tscratch);
+                String hostname = StringNew0(&tscratch);
                 String pingtext = StringNew0(&tscratch);
-                NetUnpack(buf, z, "%b%s%s%s", &msgno, &alias, &group, &pingtext);
-                printf("** PING alias: '%s' group: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(group), CSTR(pingtext));
+                NetUnpack(buf, z, "%b%s%s%s%s", &msgno, &signature, &alias, &hostname, &pingtext);
+                printf("** PING signature: '%s' alias: '%s' hostname: '%s' pingtext: '%s' **\n", CSTR(signature), CSTR(alias), CSTR(hostname), CSTR(pingtext));
 
                 if (sa_peer->sa_family != AF_INET) {
                     fprintf(stderr, "Ignoring non-IPV4 UDP message.\n");
                     continue;
                 }
 
-                HostAddr hostaddr = hostaddr_from_sockaddr((struct sockaddr_in *)sa_peer);
-                printf("hostaddr: %llx ipaddr: '%s' port: %d\n", hostaddr, get_ip_address(hostaddr), ntohs(sockaddr_port_from_hostaddr(hostaddr)));
+//                HostAddr hostaddr = HostAddrFromSockAddr((struct sockaddr_in *)sa_peer);
+//                printf("hostaddr: %llx ipaddr: '%s' port: %d\n", hostaddr, get_ip_address(hostaddr), ntohs(HostAddr_port(hostaddr)));
 
                 // Ignore messages broadcast by myself
-                if (sockaddr_matches_addrinfo(sa_peer, GMyAddrInfo)) {
-                    fprintf(stderr, "Ignoring UDP message sent by myself.\n");
+                if (StringEquals(signature, CSTR(GSignature)))
                     continue;
-                }
 
-                /*
                 if (StringEquals(pingtext, "whosthere")) {
                     ArenaReset(&tscratch);
                     Buffer writebuf = BufferNew(&tscratch, 64);
-                    NetPack(&writebuf, "%b%s%s%s", PING, GMyAlias, GMyGroup, "hello");
+                    NetPack(&writebuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "hello");
                     struct timeval timeout_val = {2, 0};
                     fprintf(stderr, "Responding 'hello' to 'whosthere'\n");
                     connect_and_send_message(sa_peer, &writebuf, &timeout_val);
                 }
-                */
             }
         }
     }
