@@ -65,8 +65,17 @@ int main(int argc, char *argv[]) {
 
     gtk_init(&argc, &argv);
 
-    if (argc > 1)
+    if (argc >= 2)
         GBindPort = argv[1];
+
+    if (argc >= 3) {
+        GAlias = StringNew(&GArena, argv[2]);
+    } else {
+        char *alias = getlogin();
+        if (alias == NULL)
+            alias = "noname";
+        GAlias = StringNew(&GArena, alias);
+    }
 
     char buf[HOST_NAME_MAX];
     int z = gethostname(buf, sizeof(buf));
@@ -77,13 +86,12 @@ int main(int argc, char *argv[]) {
     buf[HOST_NAME_MAX-1] = 0;
     GHostname = StringNew(&GArena, buf);
 
-    char *alias = getlogin();
-    if (alias == NULL)
-        alias = "noname";
-    GAlias = StringNew(&GArena, alias);
-
     GSignature = GetSignature(&GArena, GScratch, GAlias, GHostname);
-    printf("GSignature: '%s'\n", CSTR(GSignature));
+
+    printf("Port: %s\n", GBindPort);
+    printf("Alias: %s\n", CSTR(GAlias));
+    printf("Hostname: %s\n", CSTR(GHostname));
+    printf("Signature: %s\n", CSTR(GSignature));
 
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(w), 275,425);
