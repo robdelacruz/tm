@@ -35,11 +35,21 @@ typedef struct {
     String pingtext;
 } PingMsg;
 
+typedef struct {
+    int peerfd;
+    Buffer readbuf;
+    u16 msglen;
+    String alias;
+    String hostname;
+} PeerCtx;
+
 // HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
 // hostaddr = (sin_port << 32) + sin_addr
 typedef u64 HostAddr;
 
 HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa);
+struct in_addr HostAddr_addr(HostAddr hostaddr);
+in_port_t HostAddr_port(HostAddr hostaddr);
 struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr);
 
 char *get_ip_address(HostAddr hostaddr);
@@ -51,10 +61,12 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data);
 int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val);
 
 String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
+PeerCtx *find_peerctx(Array peerctxs, int peerfd);
+int find_peerctx_index(Array peerctxs, int peerfd);
+void process_peer_msg(Arena scratch, int peerfd, char *msgbytes, u16 msglen);
 
 char *GBindPort = BIND_PORT;
-Arena GArena;
-Arena GScratch;
+Arena GArena, GScratch;
 String GAlias;
 String GHostname;
 String GSignature;
@@ -113,13 +125,13 @@ int main(int argc, char *argv[]) {
 HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa) {
     return ((u64) sa->sin_port << 32) + sa->sin_addr.s_addr;
 }
-static in_port_t HostAddr_port(HostAddr hostaddr) {
-    return (in_port_t) (hostaddr >> 32);
-}
-static struct in_addr HostAddr_addr(HostAddr hostaddr) {
+struct in_addr HostAddr_addr(HostAddr hostaddr) {
     struct in_addr sin_addr;
     sin_addr.s_addr = (u32) (hostaddr & 0x00000000FFFFFFFF);
     return sin_addr;
+}
+in_port_t HostAddr_port(HostAddr hostaddr) {
+    return (in_port_t) (hostaddr >> 32);
 }
 struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr) {
     struct sockaddr_in sa;
@@ -257,7 +269,7 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
     FD_ZERO(&readfds);
     FD_SET(hostfd, &readfds);
 
-    Arena tscratch = ArenaNew(255);
+    Arena tscratch = ArenaNew(1024);
 
     while (1) {
         ArenaReset(&tscratch);
@@ -304,7 +316,6 @@ gpointer THREAD_wait_for_udp_messages(gpointer data) {
                     continue;
 
                 if (StringEquals(pingtext, "whosthere")) {
-                    ArenaReset(&tscratch);
                     Buffer writebuf = BufferNew(&tscratch, 64);
                     NetPack(&writebuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "hello");
                     struct timeval timeout_val = {2, 0};
@@ -421,10 +432,10 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
     FD_SET(hostfd, &readfds);
     int maxfd = hostfd;
 
-    Arena tscratch = ArenaNew(255);
+    Arena tscratch = ArenaNew(1024*1024);
+    Array peerctxs = ArrayNew(&tscratch, 64, sizeof(PeerCtx));
 
     while (1) {
-        ArenaReset(&tscratch);
         tmp_readfds = readfds;
 
 //        printf("Listening for TCP messages on port %s...\n", GBindPort);
@@ -453,9 +464,61 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
                     if (peerfd > maxfd)
                         maxfd = peerfd;
 
-                    //todo Add peer to peer list
+                    // Add peer to peer list
+                    PeerCtx peerctx;
+                    peerctx.peerfd = peerfd;
+                    peerctx.readbuf = BufferNew(&tscratch, 64);
+                    peerctx.msglen = 0;
+                    peerctx.alias = StringNew0(&tscratch);
+                    peerctx.hostname = StringNew0(&tscratch);
+                    ArrayAppend(&peerctxs, &peerctx);
                 } else {
                     // Received bytes from peer
+                    int peerfd = i;
+                    PeerCtx *peerctx = find_peerctx(peerctxs, peerfd);
+                    if (peerctx == NULL) {
+                        fprintf(stderr, "peerfd not found in list\n");
+                        continue;
+                    }
+
+                    int read_eof = 0;
+                    if (NetRecv(peerfd, &peerctx->readbuf) == 0)
+                        read_eof = 1;
+
+                    Buffer *readbuf = &peerctx->readbuf;
+                    while (1) {
+                        if (peerctx->msglen == 0) {
+                            // Read msglen
+                            if (readbuf->len >= sizeof(u16)) {
+                                u16 *bs = (u16 *) readbuf->bs;
+                                peerctx->msglen = ntohs(*bs);
+                                if (peerctx->msglen == 0) {
+                                    read_eof = 1;
+                                    break;
+                                }
+                                BufferShift(readbuf, sizeof(u16));
+                                continue;
+                            }
+                            break;
+                        } else {
+                            // Read msg body (msglen bytes)
+                            if (readbuf->len >= peerctx->msglen) {
+                                process_peer_msg(tscratch, peerfd, readbuf->bs, peerctx->msglen);
+                                
+                                BufferShift(readbuf, peerctx->msglen);
+                                peerctx->msglen = 0;
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    if (read_eof) {
+                        FD_CLR(peerfd, &readfds);
+                        shutdown(peerfd, SHUT_RDWR);
+                        close(peerfd);
+                        int ipeer = find_peerctx_index(peerctxs, peerfd);
+                        ArrayRemove(&peerctxs, ipeer);
+                    }
                 }
             }
         }
@@ -463,4 +526,44 @@ gpointer THREAD_wait_for_tcp_messages(gpointer data) {
 
 }
 
+PeerCtx *find_peerctx(Array peerctxs, int peerfd) {
+    for (int i=0; i < peerctxs.len; i++) {
+        PeerCtx *peerctx = ArrayItem(peerctxs, i);
+        if (peerctx->peerfd == peerfd)
+            return peerctx;
+    }
+    return NULL;
+}
+int find_peerctx_index(Array peerctxs, int peerfd) {
+    for (int i=0; i < peerctxs.len; i++) {
+        PeerCtx *peerctx = ArrayItem(peerctxs, i);
+        if (peerctx->peerfd == peerfd)
+            return i;
+    }
+    return -1;
+}
+
+void process_peer_msg(Arena scratch, int peerfd, char *msgbytes, u16 msglen) {
+    u8 msgno = MSGNO(msgbytes);
+    if (msgno == PING) {
+        String signature = StringNew0(&scratch);
+        String alias = StringNew0(&scratch);
+        String hostname = StringNew0(&scratch);
+        String pingtext = StringNew0(&scratch);
+        NetUnpack(msgbytes, msglen, "%b%s%s%s%s", &msgno, &signature, &alias, &hostname, &pingtext);
+        printf("** PING signature: '%s' alias: '%s' hostname: '%s' pingtext: '%s' **\n", CSTR(signature), CSTR(alias), CSTR(hostname), CSTR(pingtext));
+
+        if (StringEquals(pingtext, "hello")) {
+            struct sockaddr_in sa;
+            socklen_t sa_len = sizeof(sa);
+            int z = getsockname(peerfd, (struct sockaddr *)&sa, &sa_len);
+            if (z == -1) {
+                fprintf(stderr, "process_peer_msg getsockname(): %s\n", strerror(z));
+                return;
+            }
+            HostAddr hostaddr = HostAddrFromSockAddr(&sa);
+            printf("'hello' received from IP %s port %d\n", get_ip_address(hostaddr), HostAddr_port(hostaddr));
+        }
+    }
+}
 

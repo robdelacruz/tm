@@ -85,7 +85,6 @@ void BufferAppendChar(Buffer *buf, char c);
 void BufferShift(Buffer *buf, int n);
 
 Array ArrayNew(Arena *arena, u16 cap, int itemsize);
-void ArrayFree(Array *a);
 void ArrayClear(Array *a);
 void ArrayAppend(Array *a, void *item);
 void ArrayRemove(Array *a, int index);

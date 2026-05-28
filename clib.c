@@ -204,7 +204,6 @@ void StringTrim(String str) {
 }
 
 // Returns array of tokens.
-// Returned array should be freed with ArrayFree().
 Array StringSplit(Arena *arena, String str, char *sep) {
     int itokstart=0;
     int toklen=0;

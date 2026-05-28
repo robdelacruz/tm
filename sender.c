@@ -65,7 +65,7 @@ int main(int argc, char *argv[]) {
     if (alias == NULL)
         alias = "noname";
     GAlias = StringNew(&GArena, alias);
-    StringAssign(&GAlias, "rob2");
+    StringAssign(&GAlias, "rob");
 
     GSignature = GetSignature(&GArena, GScratch, GAlias, GHostname);
     printf("GSignature: '%s'\n", CSTR(GSignature));
