@@ -329,6 +329,12 @@ void ArrayRemove(Array *a, int index) {
     memset(array_item_ptr(a, a->len-1), 0, a->itemsize);
     a->len--;
 }
+void ArrayReplace(Array *a, int index, void *item) {
+    if (index < 0  || index >= a->len)
+        return;
+
+    memcpy(array_item_ptr(a, index), item, a->itemsize);
+}
 void *ArrayItem(Array a, int index) {
     assert(index >= 0 && index < a.len);
     return array_item_ptr(&a, index);

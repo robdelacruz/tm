@@ -88,6 +88,7 @@ Array ArrayNew(Arena *arena, u16 cap, int itemsize);
 void ArrayClear(Array *a);
 void ArrayAppend(Array *a, void *item);
 void ArrayRemove(Array *a, int index);
+void ArrayReplace(Array *a, int index, void *item);
 void *ArrayItem(Array a, int index);
 
 Map MapNew(Arena *arena, u16 cap);

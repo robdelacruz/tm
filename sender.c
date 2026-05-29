@@ -46,8 +46,8 @@ String GHostname;
 String GSignature;
 
 int main(int argc, char *argv[]) {
-    GArena = ArenaNew(1024);
-    GScratch = ArenaNew(1024);
+    GArena = ArenaNew(64*1024);
+    GScratch = ArenaNew(4096);
 
     if (argc > 1)
         GBindPort = argv[1];
@@ -70,7 +70,15 @@ int main(int argc, char *argv[]) {
     GSignature = GetSignature(&GArena, GScratch, GAlias, GHostname);
     printf("GSignature: '%s'\n", CSTR(GSignature));
 
-    broadcast_whosthere(GScratch);
+//    printf("Broadcasting whosthere message.\n");
+//    broadcast_whosthere(GScratch);
+
+    printf("Send hello message to localhost.\n");
+    int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
+    Buffer sendbuf = BufferNew(&GScratch, 128); 
+    NetPackLen(&sendbuf, "%b%s%s%s%s", PING, CSTR(GSignature), CSTR(GAlias), CSTR(GHostname), "hello");
+    z = send(destfd, sendbuf.bs, sendbuf.len, 0);
+    assert(z == sendbuf.len);
 
     return 0;
 }
