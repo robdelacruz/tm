@@ -595,13 +595,13 @@ void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbyt
 
 void add_or_replace_peernode(Array *peernodes, PeerNode peernode) {
     // Replace peernode if a node with the same hostaddr exists
-    for (int i=0; i < peernodes->len; i++) {
-        PeerNode *p = ArrayItem(*peernodes, i);
-        if (p->hostaddr == peernode.hostaddr) {
-            ArrayReplace(peernodes, i, &peernode);
-            return;
-        }
-    }
+//    for (int i=0; i < peernodes->len; i++) {
+//        PeerNode *p = ArrayItem(*peernodes, i);
+//        if (p->hostaddr == peernode.hostaddr) {
+//            ArrayReplace(peernodes, i, &peernode);
+//            return;
+//        }
+//    }
     ArrayAppend(peernodes, &peernode);
 }
 

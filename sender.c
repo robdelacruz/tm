@@ -37,8 +37,8 @@ typedef struct {
 
 void broadcast_whosthere(Arena scratch);
 String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
-void send_hello();
-void send_bye();
+void send_hello(int destfd);
+void send_bye(int destfd);
 
 char *GBindPort = BIND_PORT;
 Arena GArena;
@@ -71,30 +71,29 @@ int main(int argc, char *argv[]) {
 //    printf("Broadcasting whosthere message.\n");
 //    broadcast_whosthere(GScratch);
 
-    send_hello();
-    send_hello();
-    send_hello();
+    int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
+    send_hello(destfd);
+    send_hello(destfd);
+    send_hello(destfd);
 
     printf("<Enter> to send bye.\n");
     char buf2[64];
     fgets(buf2, sizeof(buf2), stdin);
 
-    send_bye();
+    send_bye(destfd);
 
     return 0;
 }
 
-void send_hello() {
+void send_hello(int destfd) {
     printf("Send hello message to localhost.\n");
-    int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
     Buffer sendbuf = BufferNew(&GScratch, 128); 
     NetPackLen(&sendbuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "hello");
     int z = send(destfd, sendbuf.bs, sendbuf.len, 0);
     assert(z == sendbuf.len);
 }
-void send_bye() {
+void send_bye(int destfd) {
     printf("Send bye message to localhost.\n");
-    int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
     Buffer sendbuf = BufferNew(&GScratch, 128); 
     NetPackLen(&sendbuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "bye");
     int z = send(destfd, sendbuf.bs, sendbuf.len, 0);
