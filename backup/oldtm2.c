@@ -108,27 +108,16 @@ int main(int argc, char *argv[]) {
     printf("Alias: %s\n", CSTR(GAlias));
     printf("Hostname: %s\n", CSTR(GHostname));
 
+    GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_size(GTK_WINDOW(w), 275,425);
+    gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
+    gtk_window_set_title(GTK_WINDOW(w), "TinyMsg");
+    g_signal_connect(w, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
     pthread_t thread_wait_udp, thread_wait_tcp;
-    pthread_create(&thread_wait_udp, NULL, THREAD_wait_for_udp_messages, NULL);
-    pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
+    pthread_create(&thread_wait_udp, THREAD_wait_for_udp_messages, NULL);
+    g_thread_new(&thread_wait_tcp, THREAD_wait_for_tcp_messages, NULL);
     broadcast_whosthere(GScratch);
-
-    while (1) {
-        char buf2[64];
-        printf("[p]show peers [q]quit\n");
-        fgets(buf2, sizeof(buf2), stdin);
-        buf2[strlen(buf2)-1] = 0;
-
-        if (strcmp(buf2, "p") == 0) {
-            for (int i=0; i < GPeernodes.len; i++) {
-                PeerNode *peer = ArrayItem(GPeernodes, i);
-                printf("%d. %s/%s %s\n", i+1, CSTR(peer->alias), CSTR(peer->hostname), get_ip_address(peer->hostaddr));
-            }
-            continue;
-        }
-        if (strcmp(buf2, "q") == 0)
-            break;
-    }
 
     return 0;
 }
@@ -579,6 +568,14 @@ void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbyt
         printf("** PING alias: '%s' hostname: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(hostname), CSTR(pingtext));
 
         if (StringEquals(pingtext, "hello")) {
+            struct sockaddr_in sa;
+            socklen_t sa_len = sizeof(sa);
+            int z = getsockname(peerfd, (struct sockaddr *)&sa, &sa_len);
+            if (z == -1) {
+                fprintf(stderr, "process_peer_msg getsockname(): %s\n", strerror(z));
+                return;
+            }
+            HostAddr hostaddr = HostAddrFromSockAddr(&sa);
             printf("'hello' received from IP %s port %d\n", get_ip_address(hostaddr), HostAddr_port(hostaddr));
 
             PeerNode peernode;
@@ -586,9 +583,6 @@ void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbyt
             peernode.alias = StringDup(GPeernodes.arena, alias);
             peernode.hostname = StringDup(GPeernodes.arena, hostname);
             add_or_replace_peernode(&GPeernodes, peernode);
-        } else if (StringEquals(pingtext, "bye")) {
-            printf("'bye' received from IP %s port %d\n", get_ip_address(hostaddr), HostAddr_port(hostaddr));
-            remove_peernode(&GPeernodes, hostaddr);
         }
     }
 }

@@ -37,13 +37,14 @@ typedef struct {
 
 void broadcast_whosthere(Arena scratch);
 String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
+void send_hello();
+void send_bye();
 
 char *GBindPort = BIND_PORT;
 Arena GArena;
 Arena GScratch;
 String GAlias;
 String GHostname;
-String GSignature;
 
 int main(int argc, char *argv[]) {
     GArena = ArenaNew(64*1024);
@@ -67,20 +68,37 @@ int main(int argc, char *argv[]) {
     GAlias = StringNew(&GArena, alias);
     StringAssign(&GAlias, "rob");
 
-    GSignature = GetSignature(&GArena, GScratch, GAlias, GHostname);
-    printf("GSignature: '%s'\n", CSTR(GSignature));
-
 //    printf("Broadcasting whosthere message.\n");
 //    broadcast_whosthere(GScratch);
 
+    send_hello();
+    send_hello();
+    send_hello();
+
+    printf("<Enter> to send bye.\n");
+    char buf2[64];
+    fgets(buf2, sizeof(buf2), stdin);
+
+    send_bye();
+
+    return 0;
+}
+
+void send_hello() {
     printf("Send hello message to localhost.\n");
     int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
     Buffer sendbuf = BufferNew(&GScratch, 128); 
-    NetPackLen(&sendbuf, "%b%s%s%s%s", PING, CSTR(GSignature), CSTR(GAlias), CSTR(GHostname), "hello");
-    z = send(destfd, sendbuf.bs, sendbuf.len, 0);
+    NetPackLen(&sendbuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "hello");
+    int z = send(destfd, sendbuf.bs, sendbuf.len, 0);
     assert(z == sendbuf.len);
-
-    return 0;
+}
+void send_bye() {
+    printf("Send bye message to localhost.\n");
+    int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
+    Buffer sendbuf = BufferNew(&GScratch, 128); 
+    NetPackLen(&sendbuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "bye");
+    int z = send(destfd, sendbuf.bs, sendbuf.len, 0);
+    assert(z == sendbuf.len);
 }
 
 void broadcast_whosthere(Arena scratch) {
@@ -124,7 +142,7 @@ void broadcast_whosthere(Arena scratch) {
     }
 
     Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s%s%s", PING, CSTR(GSignature), CSTR(GAlias), CSTR(GHostname), "whosthere");
+    NetPack(&buf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "whosthere");
     z = sendto(hostfd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
     if (z == -1) {
         fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));

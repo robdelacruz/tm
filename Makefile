@@ -13,7 +13,8 @@ t2: t2.c clib.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS)
 
 tm: tm.c clib.c cnet.c
-	gcc $(CFLAGS) $(GTK_CFLAGS) -o $@ $^ $(LIBS) $(GTK_LIBS)
+#	gcc $(CFLAGS) $(GTK_CFLAGS) -o $@ $^ $(LIBS) $(GTK_LIBS)
+	gcc $(CFLAGS) -o $@ $^ $(LIBS) 
 
 sender: sender.c clib.c cnet.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS)
