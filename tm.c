@@ -20,7 +20,7 @@
 #include "cnet.h"
 
 #define BIND_PORT "8002"
-#define UDP_LISTEN_PORT "8001"
+#define LISTEN_PORT "8001"
 
 #define MSGNO(bs) (*((u8 *)bs))
 #define PING 1
@@ -60,7 +60,12 @@ struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr);
 char *get_ip_address(HostAddr hostaddr);
 void get_ip_address2(HostAddr hostaddr, String *outstr);
 
+int open_udp_socket(char *port);
+int open_tcp_socket(char *port);
+
 void broadcast_whosthere(Arena scratch);
+void broadcast_bye(Arena scratch);
+
 void* THREAD_wait_for_udp_messages(void *data);
 void* THREAD_wait_for_tcp_messages(void *data);
 int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val);
@@ -104,13 +109,14 @@ int main(int argc, char *argv[]) {
     GHostname = StringNew(&GArena, buf);
     GPeernodes = ArrayNew(&GArena, 64, sizeof(PeerNode));
 
-    printf("Port: %s\n", GBindPort);
+    printf("BindPort: %s\n", GBindPort);
     printf("Alias: %s\n", CSTR(GAlias));
     printf("Hostname: %s\n", CSTR(GHostname));
 
     pthread_t thread_wait_udp, thread_wait_tcp;
     pthread_create(&thread_wait_udp, NULL, THREAD_wait_for_udp_messages, NULL);
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
+
     broadcast_whosthere(GScratch);
 
     while (1) {
@@ -135,15 +141,15 @@ int main(int argc, char *argv[]) {
 
 // Conversion from HostAddr <--> sockaddr_in
 HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa) {
-    return ((u64) sa->sin_port << 32) + sa->sin_addr.s_addr;
+    return ((u64) ntohs(sa->sin_port) << 32) + ntohl(sa->sin_addr.s_addr);
 }
 struct in_addr HostAddr_addr(HostAddr hostaddr) {
     struct in_addr sin_addr;
-    sin_addr.s_addr = (u32) (hostaddr & 0x00000000FFFFFFFF);
+    sin_addr.s_addr = htonl((u32) (hostaddr & 0x00000000FFFFFFFF));
     return sin_addr;
 }
 in_port_t HostAddr_port(HostAddr hostaddr) {
-    return (in_port_t) (hostaddr >> 32);
+    return (in_port_t) htons((hostaddr >> 32));
 }
 struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr) {
     struct sockaddr_in sa;
@@ -189,7 +195,7 @@ String GetSignature(Arena *arena, Arena scratch, String alias, String hostname) 
     return StringNew(arena, data.output);
 }
 
-void broadcast_whosthere(Arena scratch) {
+int open_udp_socket(char *port) {
     int z;
     struct addrinfo hints = {0};
     hints.ai_family = AF_INET;
@@ -197,110 +203,152 @@ void broadcast_whosthere(Arena scratch) {
     hints.ai_flags = AI_PASSIVE;
 
     struct addrinfo *hostai;
-    z = getaddrinfo(NULL, GBindPort, &hints, &hostai);
+    z = getaddrinfo(NULL, port, &hints, &hostai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        exit(1);
+        return -1;
     }
-
-    int hostfd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
-    if (hostfd == -1) {
+    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
+    if (fd == -1) {
         fprintf(stderr, "socket(): %s\n", strerror(errno));
-        exit(1);
+        return -1;
     }
-    z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
+    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
     if (z == -1) {
-        fprintf(stderr, "broadcast_whosthere bind(): %s\n", strerror(errno));
-        exit(1);
+        fprintf(stderr, "open_udp_socket bind(): %s\n", strerror(errno));
+        return -1;
     }
     freeaddrinfo(hostai);
 
     int yes=1;
-    z = setsockopt(hostfd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
+    z = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
     if (z == -1) {
         fprintf(stderr, "setsockopt(SO_BROADCAST): %s\n", strerror(errno));
-        exit(1);
+        return -1;
     }
+    return fd;
+}
+int open_tcp_socket(char *port) {
+    int z;
+    struct addrinfo *hostai;
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    z = getaddrinfo(NULL, port, &hints, &hostai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        return -1;
+    }
+    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
+    if (fd == -1) {
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
+        return -1;
+    }
+    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "open_tcp_socket bind(): %s\n", strerror(errno));
+        return -1;
+    }
+    freeaddrinfo(hostai);
+
+    int yes=1;
+    z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        return -1;
+    }
+    return fd;
+}
+
+void broadcast_whosthere(Arena scratch) {
+    int fd = open_udp_socket(GBindPort);
+    if (fd == -1)
+        return;
 
     struct addrinfo *broadcastai;
-    z = getaddrinfo("255.255.255.255", UDP_LISTEN_PORT, &hints, &broadcastai);
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_PASSIVE;
+    int z = getaddrinfo("255.255.255.255", LISTEN_PORT, &hints, &broadcastai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        return;
+    }
+
+    Buffer buf = BufferNew(&scratch, 32);
+    NetPack(&buf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "whosthere");
+    z = sendto(fd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
+    if (z == -1) {
+        fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));
+        freeaddrinfo(broadcastai);
+        return;
+    }
+
+    freeaddrinfo(broadcastai);
+    close(fd);
+}
+
+void broadcast_bye(Arena scratch) {
+    int fd = open_udp_socket(GBindPort);
+
+    struct addrinfo *broadcastai;
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    int z = getaddrinfo("255.255.255.255", LISTEN_PORT, &hints, &broadcastai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
         exit(1);
     }
 
     Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "whosthere");
-    z = sendto(hostfd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
+    NetPack(&buf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "bye");
+    z = sendto(fd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
     if (z == -1) {
-        fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));
+        fprintf(stderr, "broadcast_bye() sendto(): %s\n", strerror(errno));
         exit(1);
     }
 
     freeaddrinfo(broadcastai);
-
-    close(hostfd);
+    close(fd);
 }
+
 
 void* THREAD_wait_for_udp_messages(void *data) {
     int z;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    struct addrinfo *hostai;
-    z = getaddrinfo(NULL, UDP_LISTEN_PORT, &hints, &hostai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        exit(1);
-    }
-
-    int hostfd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
-    if (hostfd == -1) {
-        fprintf(stderr, "socket(): %s\n", strerror(errno));
-        exit(1);
-    }
-    z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
-    if (z == -1) {
-        fprintf(stderr, "wait_for_udp bind(): %s\n", strerror(errno));
-        fprintf(stderr, "Unable to receive UDP messages.\n");
-        freeaddrinfo(hostai);
+    int listenfd = open_udp_socket(LISTEN_PORT);
+    if (listenfd == -1)
         return NULL;
-    }
-    freeaddrinfo(hostai);
-
-    int yes=1;
-    z = setsockopt(hostfd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
-    if (z == -1) {
-        fprintf(stderr, "setsockopt(SO_BROADCAST): %s\n", strerror(errno));
-        exit(1);
-    }
 
     fd_set readfds;
     FD_ZERO(&readfds);
-    FD_SET(hostfd, &readfds);
+    FD_SET(listenfd, &readfds);
 
     Arena tscratch = ArenaNew(1024);
 
-    printf("Listening for UDP messages on port %s...\n", UDP_LISTEN_PORT);
+    printf("Listening for UDP messages on port %s...\n", LISTEN_PORT);
     while (1) {
         ArenaReset(&tscratch);
 
-        z = select(hostfd+1, &readfds, NULL, NULL, NULL);
+        z = select(listenfd+1, &readfds, NULL, NULL, NULL);
         if (z == -1 && errno == EINTR)
             continue;
         if (z == -1) {
             fprintf(stderr, "select(): %s\n", strerror(errno));
-            abort();
+            return NULL;
         }
 
-        if (FD_ISSET(hostfd, &readfds)) {
+        if (FD_ISSET(listenfd, &readfds)) {
             char buf[256];
             struct sockaddr_storage sa_storage;
             struct sockaddr *sa_peer = (struct sockaddr *) &sa_storage;
             socklen_t sa_peer_len = sizeof(sa_storage);
-            z = recvfrom(hostfd, buf, sizeof(buf), 0, sa_peer, &sa_peer_len);
+            z = recvfrom(listenfd, buf, sizeof(buf), 0, sa_peer, &sa_peer_len);
             if (z == -1) {
                 fprintf(stderr, "recvfrom(): %s\n", strerror(errno));
                 continue;
@@ -334,29 +382,17 @@ void* THREAD_wait_for_udp_messages(void *data) {
         }
     }
 
+    shutdown(listenfd, SHUT_RDWR);
+    close(listenfd);
 }
 
 int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val) {
-    int z;
-
-    // Connect to destination
-    int destfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (destfd == -1) {
-        fprintf(stderr, "connect_and_send_message socket(): %s\n", strerror(errno));
-        return -1;
-    }
-    int yes=1;
-    z = setsockopt(destfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    if (z == -1) {
-        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
-        return -1;
-    }
-    z = connect(destfd, sa_dest, sizeof(struct sockaddr));
+    int destfd = open_tcp_socket(GBindPort);
+    int z = connect(destfd, sa_dest, sizeof(struct sockaddr));
     if (z == -1) {
         fprintf(stderr, "connect_and_send_message connect(): %s\n", strerror(errno));
         return -1;
     }
-
     z = NetSend(destfd, sendbuf);
     if (z == -1) {
         return -1;
@@ -390,55 +426,35 @@ int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct t
             }
         }
     }
+
+    close(destfd);
     return 0;
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
     int z;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    struct addrinfo *hostai;
-    z = getaddrinfo(NULL, GBindPort, &hints, &hostai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        exit(1);
-    }
-
-    int hostfd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
-    if (hostfd == -1) {
-        fprintf(stderr, "socket(): %s\n", strerror(errno));
-        exit(1);
-    }
-    z = bind(hostfd, hostai->ai_addr, hostai->ai_addrlen);
-    if (z == -1) {
-        fprintf(stderr, "bind(): %s\n", strerror(errno));
-        fprintf(stderr, "Unable to receive TCP messages.\n");
-        freeaddrinfo(hostai);
+    int listenfd = open_tcp_socket(GBindPort);
+    if (listenfd == -1)
         return NULL;
-    }
-    freeaddrinfo(hostai);
 
     int backlog=50;
-    z = listen(hostfd, backlog);
+    z = listen(listenfd, backlog);
     if (z == -1) {
         fprintf(stderr, "listen(): %s\n", strerror(errno));
-        exit(1);
+        return NULL;
     }
 
     int yes=1;
-    z = setsockopt(hostfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    z = setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     if (z == -1) {
         fprintf(stderr, "setsockopt(SO_BROADCAST): %s\n", strerror(errno));
-        exit(1);
+        return NULL;
     }
 
     fd_set readfds, tmp_readfds;
     FD_ZERO(&readfds);
-    FD_SET(hostfd, &readfds);
-    int maxfd = hostfd;
+    FD_SET(listenfd, &readfds);
+    int maxfd = listenfd;
 
     Arena tscratch = ArenaNew(1024*1024);
     Array peerctxs = ArrayNew(&tscratch, 64, sizeof(PeerCtx));
@@ -454,16 +470,16 @@ void* THREAD_wait_for_tcp_messages(void *data) {
             continue;
         if (z == -1) {
             fprintf(stderr, "select(): %s\n", strerror(errno));
-            abort();
+            return NULL;
         }
 
         for (int i=0; i <= maxfd; i++) {
             if (FD_ISSET(i, &tmp_readfds)) {
-                if (i == hostfd) {
+                if (i == listenfd) {
                     // New peer connection
                     struct sockaddr_storage ss;
                     socklen_t ss_len = sizeof(ss);
-                    int peerfd = accept(hostfd, (struct sockaddr *) &ss, &ss_len);
+                    int peerfd = accept(listenfd, (struct sockaddr *) &ss, &ss_len);
                     if (peerfd == -1) {
                         fprintf(stderr, "accept(): %s\n", strerror(errno));
                         continue;
@@ -550,6 +566,8 @@ void* THREAD_wait_for_tcp_messages(void *data) {
         }
     }
 
+    shutdown(listenfd, SHUT_RDWR);
+    close(listenfd);
 }
 
 PeerCtx *find_peerctx(Array peerctxs, int peerfd) {
@@ -579,7 +597,7 @@ void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbyt
         printf("** PING alias: '%s' hostname: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(hostname), CSTR(pingtext));
 
         if (StringEquals(pingtext, "hello")) {
-            printf("'hello' received from IP %s port %d\n", get_ip_address(hostaddr), HostAddr_port(hostaddr));
+            printf("'hello' received from IP %s port %d\n", get_ip_address(hostaddr), ntohs(HostAddr_port(hostaddr)));
 
             PeerNode peernode;
             peernode.hostaddr = hostaddr;
@@ -587,7 +605,7 @@ void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbyt
             peernode.hostname = StringDup(GPeernodes.arena, hostname);
             add_or_replace_peernode(&GPeernodes, peernode);
         } else if (StringEquals(pingtext, "bye")) {
-            printf("'bye' received from IP %s port %d\n", get_ip_address(hostaddr), HostAddr_port(hostaddr));
+            printf("'bye' received from IP %s port %d\n", get_ip_address(hostaddr), ntohs(HostAddr_port(hostaddr)));
             remove_peernode(&GPeernodes, hostaddr);
         }
     }

@@ -39,6 +39,7 @@ void broadcast_whosthere(Arena scratch);
 String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
 void send_hello(int destfd);
 void send_bye(int destfd);
+int open_tcp_socket(char *port);
 
 char *GBindPort = BIND_PORT;
 Arena GArena;
@@ -68,10 +69,28 @@ int main(int argc, char *argv[]) {
     GAlias = StringNew(&GArena, alias);
     StringAssign(&GAlias, "rob");
 
-//    printf("Broadcasting whosthere message.\n");
-//    broadcast_whosthere(GScratch);
+    printf("Broadcasting whosthere message.\n");
+    broadcast_whosthere(GScratch);
 
-    int destfd = OpenConnectSocket("localhost", "8002", 12, NULL);
+    int destfd = open_tcp_socket(GBindPort);
+
+    struct addrinfo hints, *ai;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    z = getaddrinfo(NULL, "8002", &hints, &ai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        exit(1);
+    }
+    z = connect(destfd, ai->ai_addr, ai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "connect(): %s\n", strerror(errno));
+        exit(1);
+    }
+    freeaddrinfo(ai);
+
     send_hello(destfd);
     send_hello(destfd);
     send_hello(destfd);
@@ -168,3 +187,37 @@ String GetSignature(Arena *arena, Arena scratch, String alias, String hostname) 
     return StringNew(arena, data.output);
 }
 
+int open_tcp_socket(char *port) {
+    int z;
+    struct addrinfo *hostai;
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    z = getaddrinfo(NULL, port, &hints, &hostai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        exit(1);
+    }
+    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
+    if (fd == -1) {
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
+        exit(1);
+    }
+    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "bind(): %s\n", strerror(errno));
+        exit(1);
+    }
+    freeaddrinfo(hostai);
+
+    int yes=1;
+    z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        exit(1);
+    }
+
+    return fd;
+}
