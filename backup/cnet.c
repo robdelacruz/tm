@@ -9,73 +9,6 @@
 #include "clib.h"
 #include "cnet.h"
 
-#define U32(n) ((u32) n)
-#define U64(n) ((u64) n)
-
-// Conversion from HostAddr <--> sockaddr_in
-HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa) {
-    return ((u64) ntohs(sa->sin_port) << 32) + ntohl(sa->sin_addr.s_addr);
-}
-struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr) {
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = HostAddr_port(hostaddr);
-    sa.sin_addr = HostAddr_addr(hostaddr);
-    return sa;
-}
-struct in_addr HostAddr_addr(HostAddr hostaddr) {
-    struct in_addr sin_addr;
-    sin_addr.s_addr = htonl((u32) (hostaddr & 0x00000000FFFFFFFF));
-    return sin_addr;
-}
-in_port_t HostAddr_port(HostAddr hostaddr) {
-    return (in_port_t) htons((hostaddr >> 32));
-}
-
-char *HostAddr_ipaddress(HostAddr hostaddr) {
-    static char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = HostAddr_addr(hostaddr);
-    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        return "";
-    }
-    return ipaddr;
-}
-void HostAddr_ipaddress2(HostAddr hostaddr, String *outstr) {
-    char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = HostAddr_addr(hostaddr);
-    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        StringAssign(outstr, "");
-        return;
-    }
-    StringAssign(outstr, ipaddr);
-}
-
-#define SIN_ADDR(sa) ( (void *) &((struct sockaddr_in *)sa)->sin_addr )
-#define SIN6_ADDR(sa) ( (void *) &((struct sockaddr_in6 *)sa)->sin6_addr )
-char *SockAddr_ipaddress(struct sockaddr *sa) {
-    static char ipaddr[INET6_ADDRSTRLEN+1];
-    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
-    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        return "";
-    }
-    return ipaddr;
-}
-
-void SockAddr_ipaddress2(struct sockaddr *sa, String *outstr) {
-    char ipaddr[INET6_ADDRSTRLEN+1];
-    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
-    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        StringAssign(outstr, "");
-        return;
-    }
-    StringAssign(outstr, ipaddr);
-}
-
 int getaddrinfo0(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
     int z = getaddrinfo(node, service, hints, res);
     if (z != 0)
@@ -107,43 +40,146 @@ int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     return z;
 }
 
-int OpenTcpSocket(char *domain, char *port) {
+void CloseSocketFull(int fd) {
+    shutdown(fd, SHUT_RDWR);
+    close(fd);
+}
+int CreateNonBlockingSocket(char *host, char *port, struct sockaddr *sa) {
     int z;
-    struct addrinfo *hostai;
-    struct addrinfo hints = {0};
+    struct addrinfo hints, *ai;
+    memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE;
-
-    z = getaddrinfo(domain, port, &hints, &hostai);
+    z = getaddrinfo(host, port, &hints, &ai);
     if (z != 0) {
         fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        errno = EINVAL;
         return -1;
     }
-    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
+    if (sa != NULL)
+        memcpy(sa, ai->ai_addr, ai->ai_addrlen);
+
+    int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK, ai->ai_protocol);
     if (fd == -1) {
         fprintf(stderr, "socket(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
         return -1;
     }
-    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
-    if (z == -1) {
-        fprintf(stderr, "open_tcp_socket bind(): %s\n", strerror(errno));
-        return -1;
-    }
-    freeaddrinfo(hostai);
-
     int yes=1;
     z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     if (z == -1) {
         fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
         return -1;
     }
+
+    return fd;
+}
+int OpenListenSocket(char *host, char *port, int backlog, struct sockaddr *sa) {
+    int z;
+    struct addrinfo hints, *ai;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    z = getaddrinfo(host, port, &hints, &ai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        errno = EINVAL;
+        return -1;
+    }
+    if (sa != NULL)
+        memcpy(sa, ai->ai_addr, ai->ai_addrlen);
+
+    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd == -1) {
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    int yes=1;
+    z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    z = bind(fd, ai->ai_addr, ai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "bind(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    z = listen(fd, backlog);
+    if (z == -1) {
+        fprintf(stderr, "listen(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    freeaddrinfo(ai);
+    return fd;
+}
+int OpenConnectSocket(char *host, char *port, int backlog, struct sockaddr *sa) {
+    int z;
+    struct addrinfo hints, *ai;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    z = getaddrinfo(host, port, &hints, &ai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        errno = EINVAL;
+        return -1;
+    }
+    if (sa != NULL)
+        memcpy(sa, ai->ai_addr, ai->ai_addrlen);
+
+    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    if (fd == -1) {
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    int yes=1;
+    z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    z = connect(fd, ai->ai_addr, ai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "connect(): %s\n", strerror(errno));
+        freeaddrinfo(ai);
+        return -1;
+    }
+    freeaddrinfo(ai);
     return fd;
 }
 
-void ShutdownSocket(int fd) {
-    shutdown(fd, SHUT_RDWR);
-    close(fd);
+#define SIN_ADDR(sa) ( (void *) &((struct sockaddr_in *)sa)->sin_addr )
+#define SIN6_ADDR(sa) ( (void *) &((struct sockaddr_in6 *)sa)->sin6_addr )
+char *GetIPAddress(struct sockaddr *sa) {
+    static char ipaddr[INET6_ADDRSTRLEN+1];
+    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
+    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        return "";
+    }
+    return ipaddr;
+}
+
+void GetIPAddress2(struct sockaddr *sa, String *outstr) {
+    char ipaddr[INET6_ADDRSTRLEN+1];
+    void *sin_addr = sa->sa_family == AF_INET ? SIN_ADDR(sa) : SIN6_ADDR(sa);
+    if (inet_ntop(sa->sa_family, sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
+        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
+        StringAssign(outstr, "");
+        return;
+    }
+    StringAssign(outstr, ipaddr);
 }
 
 // Nonblocking socket read into buf.
@@ -239,17 +275,6 @@ int NetPackV(Buffer *buf, char *fmt, va_list args) {
                 BufferAppendChar(buf, l >> 8);
                 BufferAppendChar(buf, l);
                 nbytes_packed += 4;
-            } else if (*pfmt == 'L') {
-                u64 ll = va_arg(args, u32);
-                BufferAppendChar(buf, ll >> 56);
-                BufferAppendChar(buf, ll >> 48);
-                BufferAppendChar(buf, ll >> 40);
-                BufferAppendChar(buf, ll >> 32);
-                BufferAppendChar(buf, ll >> 24);
-                BufferAppendChar(buf, ll >> 16);
-                BufferAppendChar(buf, ll >> 8);
-                BufferAppendChar(buf, ll);
-                nbytes_packed += 8;
             } else if (*pfmt == 's') {
                 char *s = va_arg(args, char *);
                 u16 slen = strlen(s);
@@ -337,41 +362,16 @@ void NetUnpack(char *bs, int bslen, char *fmt, ...) {
                 pbs++;
             } else if (*pfmt == 'l') {
                 u32 *l = va_arg(args, u32 *);
-                *l = U32(*pbs) << 24;
+                *l = *pbs << 24;
                 pbs++;
                 if (pbs > maxp) return;
-                *l |= U32(*pbs) << 16;
+                *l |= *pbs << 16;
                 pbs++;
                 if (pbs > maxp) return;
-                *l |= U32(*pbs) << 8;
+                *l |= *pbs << 8;
                 pbs++;
                 if (pbs > maxp) return;
                 *l |= *pbs;
-                pbs++;
-            } else if (*pfmt == 'L') {
-                u64 *ll = va_arg(args, u64 *);
-                *ll = U64(*pbs) << 56;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= U64(*pbs) << 48;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= U64(*pbs) << 40;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= U64(*pbs) << 32;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= U64(*pbs) << 24;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= U64(*pbs) << 16;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= U64(*pbs) << 8;
-                pbs++;
-                if (pbs > maxp) return;
-                *ll |= *pbs;
                 pbs++;
             } else if (*pfmt == 's') {
                 String *str = (String *) va_arg(args, void *);

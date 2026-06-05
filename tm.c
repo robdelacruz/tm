@@ -6,7 +6,6 @@
 #include <assert.h>
 #include <signal.h>
 #include <limits.h>
-#include <crypt.h>
 #include <time.h>
 #include <pthread.h>
 
@@ -19,69 +18,51 @@
 #include "clib.h"
 #include "cnet.h"
 
-#define BIND_PORT "8002"
-#define LISTEN_PORT "8001"
+#define TRACKER_HOST "127.0.0.1"
+#define TRACKER_PORT "8001"
+#define BIND_PORT "9001"
 
 #define MSGNO(bs) (*((u8 *)bs))
 #define PING 1
-
-// HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
-// hostaddr = (sin_port << 32) + sin_addr
-typedef u64 HostAddr;
 
 // PING
 typedef struct {
     u8 msgno;
     String alias;
     String hostname;
-    String pingtext;
+    HostAddr hostaddr_from;
+    String text;
 } PingMsg;
 
 typedef struct {
-    int peerfd;
+    String alias;
+    String hostname;
+    HostAddr hostaddr;
+} Peer;
+
+typedef struct {
+    int fd;
     HostAddr hostaddr;
     Buffer readbuf;
+    Buffer writebuf;
     u16 msglen;
     String alias;
     String hostname;
-} PeerCtx;
+} SocketCtx;
 
-typedef struct {
-    HostAddr hostaddr;
-    String alias;
-    String hostname;
-} PeerNode;
-
-HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa);
-struct in_addr HostAddr_addr(HostAddr hostaddr);
-in_port_t HostAddr_port(HostAddr hostaddr);
-struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr);
-
-char *get_ip_address(HostAddr hostaddr);
-void get_ip_address2(HostAddr hostaddr, String *outstr);
-
-int open_udp_socket(char *port);
-int open_tcp_socket(char *port);
-
-void broadcast_whosthere(Arena scratch);
-void broadcast_bye(Arena scratch);
-
-void* THREAD_wait_for_udp_messages(void *data);
 void* THREAD_wait_for_tcp_messages(void *data);
-int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val);
 
-String GetSignature(Arena *arena, Arena scratch, String alias, String hostname);
-PeerCtx *find_peerctx(Array peerctxs, int peerfd);
-int find_peerctx_index(Array peerctxs, int peerfd);
-void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbytes, u16 msglen);
-void add_or_replace_peernode(Array *peernodes, PeerNode peernode);
-void remove_peernode(Array *peernodes, HostAddr hostaddr);
+SocketCtx *SocketCtx_find_by_fd(Array ctxs, int fd);
+int SocketCtx_find_by_fd2(Array ctxs, int fd);
+void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen);
+void Peer_add_or_replace(Array *peers, Peer peer);
+void Peer_remove(Array *peers, HostAddr hostaddr);
 
 char *GBindPort = BIND_PORT;
 Arena GArena, GScratch;
 String GAlias;
 String GHostname;
-Array GPeernodes;
+Array GPeers;
 
 int main(int argc, char *argv[]) {
     GArena = ArenaNew(64*1024);
@@ -90,350 +71,37 @@ int main(int argc, char *argv[]) {
     if (argc >= 2)
         GBindPort = argv[1];
 
-    if (argc >= 3) {
-        GAlias = StringNew(&GArena, argv[2]);
-    } else {
-        char *alias = getlogin();
-        if (alias == NULL)
-            alias = "noname";
-        GAlias = StringNew(&GArena, alias);
-    }
+    char *alias = getlogin();
+    if (alias == NULL)
+        alias = "noname";
+    GAlias = StringNew(&GArena, alias);
 
-    char buf[HOST_NAME_MAX];
-    int z = gethostname(buf, sizeof(buf));
+    char hostname[HOST_NAME_MAX];
+    int z = gethostname(hostname, sizeof(hostname));
     if (z == -1) {
         fprintf(stderr, "gethostname() %s\n", strerror(errno));
         exit(1);
     }
-    buf[HOST_NAME_MAX-1] = 0;
-    GHostname = StringNew(&GArena, buf);
-    GPeernodes = ArrayNew(&GArena, 64, sizeof(PeerNode));
+    hostname[HOST_NAME_MAX-1] = 0;
+    GHostname = StringNew(&GArena, hostname);
 
     printf("BindPort: %s\n", GBindPort);
     printf("Alias: %s\n", CSTR(GAlias));
     printf("Hostname: %s\n", CSTR(GHostname));
 
-    pthread_t thread_wait_udp, thread_wait_tcp;
-    pthread_create(&thread_wait_udp, NULL, THREAD_wait_for_udp_messages, NULL);
+    GPeers = ArrayNew(&GArena, 64, sizeof(Peer));
+
+    pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
 
-    broadcast_whosthere(GScratch);
+    pthread_join(thread_wait_tcp, NULL);
 
-    while (1) {
-        char buf2[64];
-        printf("[p]show peers [q]quit\n");
-        fgets(buf2, sizeof(buf2), stdin);
-        buf2[strlen(buf2)-1] = 0;
-
-        if (strcmp(buf2, "p") == 0) {
-            for (int i=0; i < GPeernodes.len; i++) {
-                PeerNode *peer = ArrayItem(GPeernodes, i);
-                printf("%d. %s/%s %s\n", i+1, CSTR(peer->alias), CSTR(peer->hostname), get_ip_address(peer->hostaddr));
-            }
-            continue;
-        }
-        if (strcmp(buf2, "q") == 0)
-            break;
-    }
-
-    return 0;
-}
-
-// Conversion from HostAddr <--> sockaddr_in
-HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa) {
-    return ((u64) ntohs(sa->sin_port) << 32) + ntohl(sa->sin_addr.s_addr);
-}
-struct in_addr HostAddr_addr(HostAddr hostaddr) {
-    struct in_addr sin_addr;
-    sin_addr.s_addr = htonl((u32) (hostaddr & 0x00000000FFFFFFFF));
-    return sin_addr;
-}
-in_port_t HostAddr_port(HostAddr hostaddr) {
-    return (in_port_t) htons((hostaddr >> 32));
-}
-struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr) {
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = HostAddr_port(hostaddr);
-    sa.sin_addr = HostAddr_addr(hostaddr);
-    return sa;
-}
-
-char *get_ip_address(HostAddr hostaddr) {
-    static char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = HostAddr_addr(hostaddr);
-    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        return "";
-    }
-    return ipaddr;
-}
-void get_ip_address2(HostAddr hostaddr, String *outstr) {
-    char ipaddr[INET6_ADDRSTRLEN+1];
-    struct in_addr sin_addr = HostAddr_addr(hostaddr);
-    if (inet_ntop(AF_INET, &sin_addr, ipaddr, sizeof(ipaddr)) == NULL) {
-        fprintf(stderr, "inet_ntop(): %s\n", strerror(errno));
-        StringAssign(outstr, "");
-        return;
-    }
-    StringAssign(outstr, ipaddr);
-}
-
-String GetSignature(Arena *arena, Arena scratch, String alias, String hostname) {
-    static char *CRYPTSALT = "salt1234567890";
-    srand(time(NULL));
-    String phrase = StringFormat(&scratch, "%s%s%d", CSTR(GAlias), CSTR(GHostname), rand());
-    if (phrase.len > CRYPT_MAX_PASSPHRASE_SIZE)
-        phrase.bs[CRYPT_MAX_PASSPHRASE_SIZE] = 0;
-
-    struct crypt_data data;
-    memset(&data, 0, sizeof(data));
-    char *pz = crypt_r(CSTR(phrase), CRYPTSALT, &data);
-    assert(pz != NULL);
-
-    return StringNew(arena, data.output);
-}
-
-int open_udp_socket(char *port) {
-    int z;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    struct addrinfo *hostai;
-    z = getaddrinfo(NULL, port, &hints, &hostai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        return -1;
-    }
-    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
-    if (fd == -1) {
-        fprintf(stderr, "socket(): %s\n", strerror(errno));
-        return -1;
-    }
-    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
-    if (z == -1) {
-        fprintf(stderr, "open_udp_socket bind(): %s\n", strerror(errno));
-        return -1;
-    }
-    freeaddrinfo(hostai);
-
-    int yes=1;
-    z = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, sizeof(yes));
-    if (z == -1) {
-        fprintf(stderr, "setsockopt(SO_BROADCAST): %s\n", strerror(errno));
-        return -1;
-    }
-    return fd;
-}
-int open_tcp_socket(char *port) {
-    int z;
-    struct addrinfo *hostai;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    z = getaddrinfo(NULL, port, &hints, &hostai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        return -1;
-    }
-    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
-    if (fd == -1) {
-        fprintf(stderr, "socket(): %s\n", strerror(errno));
-        return -1;
-    }
-    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
-    if (z == -1) {
-        fprintf(stderr, "open_tcp_socket bind(): %s\n", strerror(errno));
-        return -1;
-    }
-    freeaddrinfo(hostai);
-
-    int yes=1;
-    z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    if (z == -1) {
-        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
-        return -1;
-    }
-    return fd;
-}
-
-void broadcast_whosthere(Arena scratch) {
-    int fd = open_udp_socket(GBindPort);
-    if (fd == -1)
-        return;
-
-    struct addrinfo *broadcastai;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_flags = AI_PASSIVE;
-    int z = getaddrinfo("255.255.255.255", LISTEN_PORT, &hints, &broadcastai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        return;
-    }
-
-    Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "whosthere");
-    z = sendto(fd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
-    if (z == -1) {
-        fprintf(stderr, "broadcast_whosthere() sendto(): %s\n", strerror(errno));
-        freeaddrinfo(broadcastai);
-        return;
-    }
-
-    freeaddrinfo(broadcastai);
-    close(fd);
-}
-
-void broadcast_bye(Arena scratch) {
-    int fd = open_udp_socket(GBindPort);
-
-    struct addrinfo *broadcastai;
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    int z = getaddrinfo("255.255.255.255", LISTEN_PORT, &hints, &broadcastai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
-        exit(1);
-    }
-
-    Buffer buf = BufferNew(&scratch, 32);
-    NetPack(&buf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "bye");
-    z = sendto(fd, buf.bs, buf.len, 0, broadcastai->ai_addr, sizeof(struct sockaddr));
-    if (z == -1) {
-        fprintf(stderr, "broadcast_bye() sendto(): %s\n", strerror(errno));
-        exit(1);
-    }
-
-    freeaddrinfo(broadcastai);
-    close(fd);
-}
-
-
-void* THREAD_wait_for_udp_messages(void *data) {
-    int z;
-    int listenfd = open_udp_socket(LISTEN_PORT);
-    if (listenfd == -1)
-        return NULL;
-
-    fd_set readfds;
-    FD_ZERO(&readfds);
-    FD_SET(listenfd, &readfds);
-
-    Arena tscratch = ArenaNew(1024);
-
-    printf("Listening for UDP messages on port %s...\n", LISTEN_PORT);
-    while (1) {
-        ArenaReset(&tscratch);
-
-        z = select(listenfd+1, &readfds, NULL, NULL, NULL);
-        if (z == -1 && errno == EINTR)
-            continue;
-        if (z == -1) {
-            fprintf(stderr, "select(): %s\n", strerror(errno));
-            return NULL;
-        }
-
-        if (FD_ISSET(listenfd, &readfds)) {
-            char buf[256];
-            struct sockaddr_storage sa_storage;
-            struct sockaddr *sa_peer = (struct sockaddr *) &sa_storage;
-            socklen_t sa_peer_len = sizeof(sa_storage);
-            z = recvfrom(listenfd, buf, sizeof(buf), 0, sa_peer, &sa_peer_len);
-            if (z == -1) {
-                fprintf(stderr, "recvfrom(): %s\n", strerror(errno));
-                continue;
-            }
-
-            u8 msgno = MSGNO(buf);
-            if (msgno == PING) {
-                String alias = StringNew0(&tscratch);
-                String hostname = StringNew0(&tscratch);
-                String pingtext = StringNew0(&tscratch);
-                NetUnpack(buf, z, "%b%s%s%s", &msgno, &alias, &hostname, &pingtext);
-                printf("** PING alias: '%s' hostname: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(hostname), CSTR(pingtext));
-
-                if (sa_peer->sa_family != AF_INET) {
-                    fprintf(stderr, "Ignoring non-IPV4 UDP message.\n");
-                    continue;
-                }
-
-                // Ignore messages broadcast by myself
-                if (StringEquals(alias, CSTR(GAlias)) && StringEquals(hostname, CSTR(GHostname)))
-                    continue;
-
-                if (StringEquals(pingtext, "whosthere")) {
-                    Buffer writebuf = BufferNew(&tscratch, 64);
-                    NetPack(&writebuf, "%b%s%s%s", PING, CSTR(GAlias), CSTR(GHostname), "hello");
-                    struct timeval timeout_val = {2, 0};
-                    fprintf(stderr, "Responding 'hello' to 'whosthere'\n");
-                    connect_and_send_message(sa_peer, &writebuf, &timeout_val);
-                }
-            }
-        }
-    }
-
-    shutdown(listenfd, SHUT_RDWR);
-    close(listenfd);
-}
-
-int connect_and_send_message(struct sockaddr *sa_dest, Buffer *sendbuf, struct timeval *timeout_val) {
-    int destfd = open_tcp_socket(GBindPort);
-    int z = connect(destfd, sa_dest, sizeof(struct sockaddr));
-    if (z == -1) {
-        fprintf(stderr, "connect_and_send_message connect(): %s\n", strerror(errno));
-        return -1;
-    }
-    z = NetSend(destfd, sendbuf);
-    if (z == -1) {
-        return -1;
-    }
-    if (z == 0)
-        return 0;
-
-    fd_set writefds;
-    FD_ZERO(&writefds);
-    FD_SET(destfd, &writefds);
-
-    while (1) {
-        z = select(destfd+1, NULL, &writefds, NULL, timeout_val);
-        if (z == 0) {
-            fprintf(stderr, "connect_and_send_message select() timeout\n");
-            return -1;
-        }
-        if (z == -1 && errno == EINTR)
-            continue;
-        if (z == -1) {
-            fprintf(stderr, "connect_and_send_message select(): %s\n", strerror(errno));
-            return -1;
-        }
-        if (FD_ISSET(destfd, &writefds)) {
-            z = NetSend(destfd, sendbuf);
-            if (z == 0)
-                break;
-            if (z == -1) {
-                fprintf(stderr, "connect_and_send_message() network error during send\n");
-                return -1;
-            }
-        }
-    }
-
-    close(destfd);
     return 0;
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
     int z;
-    int listenfd = open_tcp_socket(GBindPort);
+    int listenfd = OpenTcpSocket(NULL, GBindPort);
     if (listenfd == -1)
         return NULL;
 
@@ -444,26 +112,22 @@ void* THREAD_wait_for_tcp_messages(void *data) {
         return NULL;
     }
 
-    int yes=1;
-    z = setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-    if (z == -1) {
-        fprintf(stderr, "setsockopt(SO_BROADCAST): %s\n", strerror(errno));
-        return NULL;
-    }
-
     fd_set readfds, tmp_readfds;
+    fd_set writefds, tmp_writefds;
     FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
     FD_SET(listenfd, &readfds);
     int maxfd = listenfd;
 
     Arena tscratch = ArenaNew(1024*1024);
-    Array peerctxs = ArrayNew(&tscratch, 64, sizeof(PeerCtx));
+    Array socketctxs = ArrayNew(&tscratch, 64, sizeof(SocketCtx));
 
-    printf("Listening for TCP messages on port %s...\n", GBindPort);
+    printf("Listening for messages on port %s...\n", GBindPort);
     while (1) {
         tmp_readfds = readfds;
+        tmp_writefds = writefds;
 
-        z = select(maxfd+1, &tmp_readfds, NULL, NULL, NULL);
+        z = select(maxfd+1, &tmp_readfds, &tmp_writefds, NULL, NULL);
         if (z == 0) // timeout
             continue;
         if (z == -1 && errno == EINTR)
@@ -479,56 +143,55 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                     // New peer connection
                     struct sockaddr_storage ss;
                     socklen_t ss_len = sizeof(ss);
-                    int peerfd = accept(listenfd, (struct sockaddr *) &ss, &ss_len);
-                    if (peerfd == -1) {
+                    int socketfd = accept(listenfd, (struct sockaddr *) &ss, &ss_len);
+                    if (socketfd == -1) {
                         fprintf(stderr, "accept(): %s\n", strerror(errno));
                         continue;
                     }
 
                     // Only accept IPv4 connections
                     if (ss.ss_family != AF_INET) {
-                        printf("Ignoring non-IPv4 fd %d\n", peerfd);
-                        shutdown(peerfd, SHUT_RDWR);
-                        close(peerfd);
+                        printf("Ignoring non-IPv4 fd %d\n", socketfd);
+                        ShutdownSocket(socketfd);
                         continue;
                     }
 
-                    // Add peer to peer list
-                    PeerCtx peerctx;
-                    peerctx.peerfd = peerfd;
-                    peerctx.hostaddr = HostAddrFromSockAddr((struct sockaddr_in *)&ss);
-                    peerctx.readbuf = BufferNew(&tscratch, 64);
-                    peerctx.msglen = 0;
-                    peerctx.alias = StringNew0(&tscratch);
-                    peerctx.hostname = StringNew0(&tscratch);
-                    ArrayAppend(&peerctxs, &peerctx);
+                    SocketCtx socketctx;
+                    socketctx.fd = socketfd;
+                    socketctx.hostaddr = HostAddrFromSockAddr((struct sockaddr_in *)&ss);
+                    socketctx.readbuf = BufferNew(&tscratch, 64);
+                    socketctx.writebuf = BufferNew(&tscratch, 64);
+                    socketctx.msglen = 0;
+                    socketctx.alias = StringNew0(&tscratch);
+                    socketctx.hostname = StringNew0(&tscratch);
+                    ArrayAppend(&socketctxs, &socketctx);
 
-                    FD_SET(peerfd, &readfds);
-                    if (peerfd > maxfd)
-                        maxfd = peerfd;
+                    FD_SET(socketfd, &readfds);
+                    if (socketfd > maxfd)
+                        maxfd = socketfd;
 
-                    printf("New peerctx fd: %d\n", peerctx.peerfd);
+                    printf("New socketfd: %d\n", socketfd);
                 } else {
                     // Received bytes from peer
-                    int peerfd = i;
-                    PeerCtx *peerctx = find_peerctx(peerctxs, peerfd);
-                    if (peerctx == NULL) {
-                        fprintf(stderr, "peerfd %d not found in peerctxs\n", peerfd);
+                    int socketfd = i;
+                    SocketCtx *socketctx = SocketCtx_find_by_fd(socketctxs, socketfd);
+                    if (socketctx == NULL) {
+                        fprintf(stderr, "socketfd %d not found in socketctxs\n", socketfd);
                         continue;
                     }
 
                     int read_eof = 0;
-                    if (NetRecv(peerfd, &peerctx->readbuf) == 0)
+                    if (NetRecv(socketfd, &socketctx->readbuf) == 0)
                         read_eof = 1;
 
-                    Buffer *readbuf = &peerctx->readbuf;
+                    Buffer *readbuf = &socketctx->readbuf;
                     while (1) {
-                        if (peerctx->msglen == 0) {
+                        if (socketctx->msglen == 0) {
                             // Read msglen
                             if (readbuf->len >= sizeof(u16)) {
                                 u16 *bs = (u16 *) readbuf->bs;
-                                peerctx->msglen = ntohs(*bs);
-                                if (peerctx->msglen == 0) {
+                                socketctx->msglen = ntohs(*bs);
+                                if (socketctx->msglen == 0) {
                                     read_eof = 1;
                                     break;
                                 }
@@ -538,28 +201,27 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                             break;
                         } else {
                             // Read msg body (msglen bytes)
-                            if (readbuf->len >= peerctx->msglen) {
-                                process_peer_msg(tscratch, peerfd, peerctx->hostaddr, readbuf->bs, peerctx->msglen);
+                            if (readbuf->len >= socketctx->msglen) {
+                                handle_msg(tscratch, socketfd, socketctx->hostaddr, readbuf->bs, socketctx->msglen);
                                 
-                                BufferShift(readbuf, peerctx->msglen);
-                                peerctx->msglen = 0;
+                                BufferShift(readbuf, socketctx->msglen);
+                                socketctx->msglen = 0;
                                 continue;
                             }
                             break;
                         }
                     }
                     if (read_eof) {
-                        FD_CLR(peerfd, &readfds);
-                        shutdown(peerfd, SHUT_RDWR);
-                        close(peerfd);
+                        FD_CLR(socketfd, &readfds);
+                        ShutdownSocket(socketfd);
 
-                        int ipeer = find_peerctx_index(peerctxs, peerfd);
-                        ArrayRemove(&peerctxs, ipeer);
-                        if (peerctxs.len == 0) {
+                        int index = SocketCtx_find_by_fd2(socketctxs, socketfd);
+                        ArrayRemove(&socketctxs, index);
+                        if (socketctxs.len == 0) {
                             ArenaReset(&tscratch);
-                            peerctxs = ArrayNew(&tscratch, 64, sizeof(PeerCtx));
+                            socketctxs = ArrayNew(&tscratch, 64, sizeof(SocketCtx));
                         }
-                        printf("Closed peer %d\n", peerfd);
+                        printf("Closed socketfd %d\n", socketfd);
                     }
                 }
             }
@@ -570,64 +232,71 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     close(listenfd);
 }
 
-PeerCtx *find_peerctx(Array peerctxs, int peerfd) {
-    for (int i=0; i < peerctxs.len; i++) {
-        PeerCtx *peerctx = ArrayItem(peerctxs, i);
-        if (peerctx->peerfd == peerfd)
-            return peerctx;
+SocketCtx *SocketCtx_find_by_fd(Array ctxs, int fd) {
+    for (int i=0; i < ctxs.len; i++) {
+        SocketCtx *ctx = ArrayItem(ctxs, i);
+        if (ctx->fd == fd)
+            return ctx;
     }
     return NULL;
 }
-int find_peerctx_index(Array peerctxs, int peerfd) {
-    for (int i=0; i < peerctxs.len; i++) {
-        PeerCtx *peerctx = ArrayItem(peerctxs, i);
-        if (peerctx->peerfd == peerfd)
+int SocketCtx_find_by_fd2(Array ctxs, int fd) {
+    for (int i=0; i < ctxs.len; i++) {
+        SocketCtx *ctx = ArrayItem(ctxs, i);
+        if (ctx->fd == fd)
             return i;
     }
     return -1;
 }
 
-void process_peer_msg(Arena scratch, int peerfd, HostAddr hostaddr, char *msgbytes, u16 msglen) {
+void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen) {
     u8 msgno = MSGNO(msgbytes);
     if (msgno == PING) {
         String alias = StringNew0(&scratch);
         String hostname = StringNew0(&scratch);
-        String pingtext = StringNew0(&scratch);
-        NetUnpack(msgbytes, msglen, "%b%s%s%s", &msgno, &alias, &hostname, &pingtext);
-        printf("** PING alias: '%s' hostname: '%s' pingtext: '%s' **\n", CSTR(alias), CSTR(hostname), CSTR(pingtext));
+        HostAddr hostaddr_from;
+        String text = StringNew0(&scratch);
+        NetUnpack(msgbytes, msglen, "%b%s%s%L%s", &msgno, &alias, &hostname, &hostaddr_from, &text);
+        printf("** PING alias: '%s' hostname: '%s' hostaddr_from: %s (port %d) text: '%s' **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(hostaddr_from), ntohs(HostAddr_port(hostaddr_from)), CSTR(text));
 
-        if (StringEquals(pingtext, "hello")) {
-            printf("'hello' received from IP %s port %d\n", get_ip_address(hostaddr), ntohs(HostAddr_port(hostaddr)));
-
-            PeerNode peernode;
-            peernode.hostaddr = hostaddr;
-            peernode.alias = StringDup(GPeernodes.arena, alias);
-            peernode.hostname = StringDup(GPeernodes.arena, hostname);
-            add_or_replace_peernode(&GPeernodes, peernode);
-        } else if (StringEquals(pingtext, "bye")) {
-            printf("'bye' received from IP %s port %d\n", get_ip_address(hostaddr), ntohs(HostAddr_port(hostaddr)));
-            remove_peernode(&GPeernodes, hostaddr);
+        if (StringEquals(text, "knock")) {
+            // Tracker forwarded 'knock', source address is in hostaddr_from 
+            Peer peer;
+            peer.hostaddr = hostaddr_from;
+            peer.alias = StringDup(GPeers.arena, alias);
+            peer.hostname = StringDup(GPeers.arena, hostname);
+            Peer_add_or_replace(&GPeers, peer);
+        } else if (StringEquals(text, "hello")) {
+            // Peer sends 'hello' directly
+            Peer peer;
+            peer.hostaddr = hostaddr;
+            peer.alias = StringDup(GPeers.arena, alias);
+            peer.hostname = StringDup(GPeers.arena, hostname);
+            Peer_add_or_replace(&GPeers, peer);
+        } else if (StringEquals(text, "bye")) {
+            // Tracker forwarded 'bye', source addressed is in hostaddr_from
+            Peer_remove(&GPeers, hostaddr_from);
         }
     }
 }
 
-void add_or_replace_peernode(Array *peernodes, PeerNode peernode) {
-    // Replace peernode if a node with the same hostaddr exists
-//    for (int i=0; i < peernodes->len; i++) {
-//        PeerNode *p = ArrayItem(*peernodes, i);
-//        if (p->hostaddr == peernode.hostaddr) {
-//            ArrayReplace(peernodes, i, &peernode);
-//            return;
-//        }
-//    }
-    ArrayAppend(peernodes, &peernode);
+void Peer_add_or_replace(Array *peers, Peer peer) {
+    // Replace if a peer with the same hostaddr exists
+    for (int i=0; i < peers->len; i++) {
+        Peer *p = ArrayItem(*peers, i);
+        if (p->hostaddr == peer.hostaddr) {
+            ArrayReplace(peers, i, &peer);
+            return;
+        }
+    }
+    ArrayAppend(peers, &peer);
 }
 
-void remove_peernode(Array *peernodes, HostAddr hostaddr) {
-    for (int i=0; i < peernodes->len; i++) {
-        PeerNode *p = ArrayItem(*peernodes, i);
+void Peer_remove(Array *peers, HostAddr hostaddr) {
+    for (int i=0; i < peers->len; i++) {
+        Peer *p = ArrayItem(*peers, i);
         if (p->hostaddr == hostaddr) {
-            ArrayRemove(peernodes, i);
+            ArrayRemove(peers, i);
             return;
         }
     }
