@@ -125,21 +125,115 @@ int OpenTcpSocket(char *domain, char *port) {
         fprintf(stderr, "socket(): %s\n", strerror(errno));
         return -1;
     }
-    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
-    if (z == -1) {
-        fprintf(stderr, "open_tcp_socket bind(): %s\n", strerror(errno));
-        return -1;
-    }
-    freeaddrinfo(hostai);
-
     int yes=1;
     z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     if (z == -1) {
         fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        freeaddrinfo(hostai);
         return -1;
     }
+    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "OpenTcpSocket bind(): %s\n", strerror(errno));
+        freeaddrinfo(hostai);
+        return -1;
+    }
+    freeaddrinfo(hostai);
+
     return fd;
 }
+
+int OpenTcpConnectSocket(char *bindhost, char *bindport, char *connecthost, char *connectport, struct timeval *timeout) {
+    int z;
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    struct addrinfo *bindai;
+    z = getaddrinfo(bindhost, bindport, &hints, &bindai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo() %s/%s : %s\n", bindhost, bindport, gai_strerror(z));
+        return -1;
+    }
+    int fd = socket(bindai->ai_family, bindai->ai_socktype | SOCK_NONBLOCK, bindai->ai_protocol);
+    if (fd == -1) {
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
+        return -1;
+    }
+    int yes=1;
+    z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        freeaddrinfo(bindai);
+        return -1;
+    }
+    z = bind(fd, bindai->ai_addr, bindai->ai_addrlen);
+    if (z == -1) {
+        fprintf(stderr, "bind() %s/%s: %s\n", bindhost, bindport, strerror(errno));
+        freeaddrinfo(bindai);
+        return -1;
+    }
+    freeaddrinfo(bindai);
+
+    struct addrinfo *connectai;
+    z = getaddrinfo(connecthost, connectport, &hints, &connectai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo() %s/%s : %s\n", connecthost, connectport, gai_strerror(z));
+        return -1;
+    }
+    z = connect(fd, connectai->ai_addr, connectai->ai_addrlen);
+    freeaddrinfo(connectai);
+    if (z == 0)
+        goto connected;
+    if (z == -1 && errno != EINPROGRESS) {
+        fprintf(stderr, "nonblocking connect() %s/%s: %s\n", connecthost, connectport, strerror(errno));
+        ShutdownSocket(fd);
+        return -1;
+    }
+    if (z == -1 && errno == EINPROGRESS) {
+        fd_set writefds;
+        FD_ZERO(&writefds);
+        FD_SET(fd, &writefds);
+
+        while (1) {
+            int zz = select(fd+1, NULL, &writefds, NULL, timeout);
+            if (zz == 0) {
+                fprintf(stderr, "nonblocking connect() timeout %s/%s\n", connecthost, connectport);
+                ShutdownSocket(fd);
+                return -1;
+            }
+            if (zz == -1 && errno == EINTR)
+                continue;
+            if (zz == -1) {
+                fprintf(stderr, "nonblocking connect select(): %s\n", strerror(errno));
+                ShutdownSocket(fd);
+                return -1;
+            }
+            assert(zz > 0);
+            break;
+        }
+        assert(FD_ISSET(fd, &writefds));
+
+        int err=0;
+        socklen_t errlen = sizeof(err);
+        int zz = getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen);
+        if (zz == -1) {
+            fprintf(stderr, "nonblocking connect getsockopt(): %s\n", strerror(errno));
+            ShutdownSocket(fd);
+            return -1;
+        } 
+        if (err != 0) {
+            fprintf(stderr, "nonblocking connect() error: %s\n", strerror(err));
+            ShutdownSocket(fd);
+            return -1;
+        }
+    }
+
+connected:
+    return fd;
+}
+
 
 void ShutdownSocket(int fd) {
     shutdown(fd, SHUT_RDWR);

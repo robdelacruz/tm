@@ -1,6 +1,8 @@
 #ifndef CLIB_H
 #define CLIB_H
 
+#include <stdio.h>
+
 #define countof(v) (sizeof(v) / sizeof((v)[0]))
 #define memzero(p, v) (memset(p, 0, sizeof(v)))
 #define CAST(v, type) ((type) (v))

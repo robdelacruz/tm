@@ -21,54 +21,18 @@
 
 #define TRACKER_HOST "127.0.0.1"
 #define TRACKER_PORT "8001"
-//#define TRACKER_HOST "google.com"
-//#define TRACKER_PORT "8001"
-#define BIND_PORT "9001"
 
-int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout);
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen);
 
-char *GBindPort = BIND_PORT;
 Arena GArena, GScratch;
-String GAlias;
-String GHostname;
 Array GPeers;
 
 int main(int argc, char *argv[]) {
     GArena = ArenaNew(64*1024);
     GScratch = ArenaNew(1024);
 
-    if (argc >= 2)
-        GBindPort = argv[1];
-
-    char *alias = getlogin();
-    if (alias == NULL)
-        alias = "noname";
-    GAlias = StringNew(&GArena, alias);
-
-    char hostname[HOST_NAME_MAX];
-    int z = gethostname(hostname, sizeof(hostname));
-    if (z == -1) {
-        fprintf(stderr, "gethostname() %s\n", strerror(errno));
-        exit(1);
-    }
-    hostname[HOST_NAME_MAX-1] = 0;
-    GHostname = StringNew(&GArena, hostname);
-
-    printf("BindPort: %s\n", GBindPort);
-    printf("Alias: %s\n", CSTR(GAlias));
-    printf("Hostname: %s\n", CSTR(GHostname));
-
     GPeers = ArrayNew(&GArena, 64, sizeof(Peer));
-
-    struct timeval timeout = {2, 0};
-    Buffer sendbuf = BufferNew(&GScratch, 128);
-    NetPackLen(&sendbuf, "%b%s%s%L%s", PING, CSTR(GAlias), CSTR(GHostname), 0, "knock");
-    printf("Sending knock to tracker...\n");
-    z = send_msg_to_tracker(&sendbuf, &timeout);
-    if (z == -1)
-        return 1;
 
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
@@ -78,61 +42,9 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout) {
-    int z;
-    int trackerfd = OpenTcpConnectSocket(NULL, GBindPort, TRACKER_HOST, TRACKER_PORT, timeout);
-    if (trackerfd == -1) {
-        fprintf(stderr, "Error opening tracker socket\n");
-        return -1;
-    }
-
-    z = NetSend(trackerfd, sendbuf);
-    if (z == -1) {
-        fprintf(stderr, "Error sending message to tracker (%s)\n", strerror(errno));
-        return -1;
-    }
-    if (z == 0) {
-        ShutdownSocket(trackerfd);
-        return 0;
-    }
-
-    fd_set writefds;
-    FD_ZERO(&writefds);
-    FD_SET(trackerfd, &writefds);
-
-    while (1) {
-        z = select(trackerfd+1, NULL, &writefds, NULL, timeout);
-        if (z == 0) {
-            fprintf(stderr, "Timeout sending message to tracker (%s)\n", strerror(errno));
-            ShutdownSocket(trackerfd);
-            return -1;
-        }
-        if (z == -1 && errno == EINTR)
-            continue;
-        if (z == -1) {
-            fprintf(stderr, "Error sending message to tracker (%s)\n", strerror(errno));
-            ShutdownSocket(trackerfd);
-            return -1;
-        }
-        if (FD_ISSET(trackerfd, &writefds)) {
-            z = NetSend(trackerfd, sendbuf);
-            if (z == -1) {
-                fprintf(stderr, "Error sending message to tracker (%s)\n", strerror(errno));
-                ShutdownSocket(trackerfd);
-                return -1;
-            }
-            if (z == 0)
-                break;
-        }
-    }
-
-    ShutdownSocket(trackerfd);
-    return 0;
-}
-
 void* THREAD_wait_for_tcp_messages(void *data) {
     int z;
-    int listenfd = OpenTcpSocket(NULL, GBindPort);
+    int listenfd = OpenTcpSocket(TRACKER_HOST, TRACKER_PORT);
     if (listenfd == -1)
         return NULL;
 
@@ -153,7 +65,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     Arena tscratch = ArenaNew(1024*1024);
     Array socketctxs = ArrayNew(&tscratch, 64, sizeof(SocketCtx));
 
-    printf("Listening for messages on port %s...\n", GBindPort);
+    printf("Tracker listening for messages on port %s...\n", TRACKER_PORT);
     while (1) {
         tmp_readfds = readfds;
         tmp_writefds = writefds;
@@ -272,22 +184,19 @@ void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 ms
         printf("** PING alias: '%s' hostname: '%s' hostaddr_from: %s (port %d) text: '%s' **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(hostaddr_from), ntohs(HostAddr_port(hostaddr_from)), CSTR(text));
 
         if (StringEquals(text, "knock")) {
-            // Tracker forwarded 'knock', source address is in hostaddr_from 
-            Peer peer;
-            peer.hostaddr = hostaddr_from;
-            peer.alias = StringDup(GPeers.arena, alias);
-            peer.hostname = StringDup(GPeers.arena, hostname);
-            Peer_add_or_replace(&GPeers, peer);
-        } else if (StringEquals(text, "hello")) {
-            // Peer sent 'hello' directly
+            // Peer sent 'knock' directly
             Peer peer;
             peer.hostaddr = hostaddr;
             peer.alias = StringDup(GPeers.arena, alias);
             peer.hostname = StringDup(GPeers.arena, hostname);
             Peer_add_or_replace(&GPeers, peer);
+
+            //todo: Forward knock to all peers
         } else if (StringEquals(text, "bye")) {
-            // Tracker forwarded 'bye', source addressed is in hostaddr_from
-            Peer_remove(&GPeers, hostaddr_from);
+            // Peer sent 'bye' directly
+            Peer_remove(&GPeers, hostaddr);
+
+            //todo: Forward bye to all peers
         }
     }
 }
