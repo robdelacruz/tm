@@ -29,7 +29,11 @@ typedef struct {
 
 SocketCtx *SocketCtx_find_by_fd(Array ctxs, int fd);
 int SocketCtx_find_by_fd2(Array ctxs, int fd);
+SocketCtx *SocketCtx_find_by_hostaddr(Array ctxs, HostAddr hostaddr);
+int SocketCtx_find_by_hostaddr2(Array ctxs, HostAddr hostaddr);
+
 void Peer_add_or_replace(Array *peers, Peer peer);
 void Peer_remove(Array *peers, HostAddr hostaddr);
+void print_peers(Array peers);
 
 
