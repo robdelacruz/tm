@@ -169,9 +169,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
         }
     }
 
-    shutdown(listenfd, SHUT_RDWR);
-    close(listenfd);
-
+    ShutdownSocket(listenfd);
     ArenaFree(&tarena);
     ArenaFree(&tscratch);
 }
@@ -247,8 +245,7 @@ void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, A
             continue;
         }
         if (z == 0) {
-//            ShutdownSocket(peerfd);
-            close(peerfd);
+            ShutdownSocket(peerfd);
             continue;
         }
         if (z == 1) {

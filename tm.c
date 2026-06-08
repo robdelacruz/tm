@@ -127,8 +127,7 @@ int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout) {
         }
     }
 
-//    ShutdownSocket(trackerfd);
-    close(trackerfd);
+    ShutdownSocket(trackerfd);
     return 0;
 }
 
@@ -201,7 +200,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                     if (socketfd > maxfd)
                         maxfd = socketfd;
 
-                    //printf("New socketfd: %d\n", socketfd);
+                    printf("New socketfd: %d\n", socketfd);
                 } else {
                     // Received bytes from socket
                     int socketfd = i;
@@ -259,8 +258,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
         }
     }
 
-    shutdown(listenfd, SHUT_RDWR);
-    close(listenfd);
+    ShutdownSocket(listenfd);
 }
 
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
@@ -339,8 +337,7 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr des
         return -1;
     }
     if (z == 0) {
-//      ShutdownSocket(destfd);
-        close(destfd);
+        ShutdownSocket(destfd);
         return 0;
     }
     if (z == 1) {

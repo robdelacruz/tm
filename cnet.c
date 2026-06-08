@@ -25,7 +25,7 @@ struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr) {
     return sa;
 }
 struct in_addr HostAddr_addr(HostAddr hostaddr) {
-    struct in_addr sin_addr;
+    struct in_addr sin_addr = {0};
     sin_addr.s_addr = htonl((u32) (hostaddr & 0x00000000FFFFFFFF));
     return sin_addr;
 }
@@ -85,25 +85,25 @@ int getaddrinfo0(const char *node, const char *service, const struct addrinfo *h
 int socket0(int domain, int type, int protocol) {
     int z = socket(domain, type, protocol);
     if (z == -1)
-        fprintf(stderr, "socket(): %s\n", strerror(z));
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
     return z;
 }
 int getsockopt0(int sockfd, int level, int optname, void *optval, socklen_t *optlen) {
     int z = getsockopt(sockfd, level, optname, optval, optlen);
     if (z != 0)
-        fprintf(stderr, "getsockopt(): %s\n", strerror(z));
+        fprintf(stderr, "getsockopt(): %s\n", strerror(errno));
     return z;
 }
 int setsockopt0(int sockfd, int level, int optname, const void *optval, socklen_t optlen) {
     int z = setsockopt(sockfd, level, optname, optval, optlen);
     if (z != 0)
-        fprintf(stderr, "setsockopt(): %s\n", strerror(z));
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
     return z;
 }
 int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     int z = connect(sockfd, addr, addrlen);
     if (z != 0 && errno != EINPROGRESS)
-        fprintf(stderr, "connect(): %s\n", strerror(z));
+        fprintf(stderr, "connect(): %s\n", strerror(errno));
     return z;
 }
 
@@ -138,6 +138,7 @@ int OpenTcpSocket(char *domain, char *port) {
         freeaddrinfo(hostai);
         return -1;
     }
+    printf("OpenTcpSocket() binded to %s\n", SockAddr_ipaddress(hostai->ai_addr));
     freeaddrinfo(hostai);
 
     return fd;
