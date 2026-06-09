@@ -26,3 +26,28 @@ s_addr(32) = (uint32) [peer address]
 
 typedef u64 HostAddr;
 
+
+IPV4 socket bind:
+int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+if (fd == -1) {
+    fprintf(stderr, "send_msg_to_tracker() socket(): %s\n", strerror(errno));
+    return -1;
+}
+int yes=1;
+z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+if (z == -1) {
+    fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+    return -1;
+}
+
+memset(&sa, 0, sizeof(sa));
+sa.sin_family = AF_INET;
+sa.sin_port = INADDR_ANY;
+sa.sin_addr.s_addr = INADDR_ANY;
+z = bind(fd, (struct sockaddr *) &sa, sizeof(sa));
+if (z == -1) {
+    fprintf(stderr, "send_msg_to_tracker() bind(): %s\n", strerror(errno));
+    return -1;
+}
+
+

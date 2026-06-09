@@ -3,6 +3,15 @@
 
 #define MSGNO(bs) (*((u8 *)bs))
 #define PING 1
+#define KNOCK 2
+
+// KNOCK
+typedef struct {
+    u8 msgno;
+    String alias;
+    String hostname;
+    u16 hostport;
+} KnockMsg;
 
 // PING
 typedef struct {

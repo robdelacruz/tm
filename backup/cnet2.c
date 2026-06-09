@@ -145,36 +145,40 @@ int OpenTcpSocket(char *domain, char *port) {
     return fd;
 }
 
-int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, struct timeval *timeout) {
+int OpenTcpConnectSocket(char *bindhost, char *bindport, char *connecthost, char *connectport, struct timeval *timeout) {
     int z;
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
-    int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    struct addrinfo *bindai;
+    z = getaddrinfo(bindhost, bindport, &hints, &bindai);
+    if (z != 0) {
+        fprintf(stderr, "getaddrinfo() %s/%s : %s\n", bindhost, bindport, gai_strerror(z));
+        return -1;
+    }
+    int fd = socket(bindai->ai_family, bindai->ai_socktype | SOCK_NONBLOCK, bindai->ai_protocol);
     if (fd == -1) {
-        fprintf(stderr, "OpenTcpConnect() socket(): %s\n", strerror(errno));
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
         return -1;
     }
     int yes=1;
     z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     if (z == -1) {
         fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        freeaddrinfo(bindai);
+        close(fd);
         return -1;
     }
-
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = bindport;
-    sa.sin_addr.s_addr = INADDR_ANY;
-    z = bind(fd, (struct sockaddr *) &sa, sizeof(sa));
+    z = bind(fd, bindai->ai_addr, bindai->ai_addrlen);
     if (z == -1) {
-        fprintf(stderr, "OpenTcpConnect() bind(): %s\n", strerror(errno));
+        fprintf(stderr, "bind() %s/%s: %s\n", bindhost, bindport, strerror(errno));
+        freeaddrinfo(bindai);
+        close(fd);
         return -1;
     }
-
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    freeaddrinfo(bindai);
 
     struct addrinfo *connectai;
     z = getaddrinfo(connecthost, connectport, &hints, &connectai);

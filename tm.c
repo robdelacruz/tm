@@ -23,14 +23,15 @@
 #define TRACKER_PORT "8001"
 //#define TRACKER_HOST "google.com"
 //#define TRACKER_PORT "8001"
-#define BIND_PORT "9001"
+#define HOST_PORT 9000
 
 int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout);
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
 
-String GBindPort;
+u16 GHostPort = HOST_PORT;
+char GHostPortStr[10];
 String GAlias;
 String GHostname;
 Array GPeers;
@@ -40,7 +41,6 @@ int main(int argc, char *argv[]) {
     Arena arena = ArenaNew(64*1024);
     Arena scratch = ArenaNew(1024);
 
-    GBindPort = StringNew(&arena, BIND_PORT);
     if (getlogin() != NULL)
         GAlias = StringNew(&arena, getlogin());
     else
@@ -56,23 +56,27 @@ int main(int argc, char *argv[]) {
     if (argc > 1) {
         int n = atoi(argv[1]);
         if (n > 0) {
-            StringAppend(&GAlias, argv[1]);
-            StringAssignFormat(&GBindPort, "900%s", argv[1]);
+            GHostPort += n;
+
+            char ns[12];
+            snprintf(ns, sizeof(ns), "%d", n);
+            StringAppend(&GAlias, ns);
         }
     }
-    printf("Hello %s/%s port %s\n", CSTR(GAlias), CSTR(GHostname), CSTR(GBindPort));
+    snprintf(GHostPortStr, sizeof(GHostPortStr), "%d", GHostPort);
+    printf("Hello %s/%s port %d\n", CSTR(GAlias), CSTR(GHostname), GHostPort);
 
     GPeers = ArrayNew(&arena, 64, sizeof(Peer));
 
+    pthread_t thread_wait_tcp;
+    pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
+
     Buffer sendbuf = BufferNew(&scratch, 128);
-    NetPackLen(&sendbuf, "%b%s%s%L%s", PING, CSTR(GAlias), CSTR(GHostname), 0, "knock");
+    NetPackLen(&sendbuf, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GHostPort);
     struct timeval timeout = {2, 0};
     z = send_msg_to_tracker(&sendbuf, &timeout);
     if (z == -1)
         return 1;
-
-    pthread_t thread_wait_tcp;
-    pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
 
     pthread_join(thread_wait_tcp, NULL);
     return 0;
@@ -80,7 +84,10 @@ int main(int argc, char *argv[]) {
 
 int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout) {
     int z;
-    int trackerfd = OpenTcpConnectSocket(NULL, CSTR(GBindPort), TRACKER_HOST, TRACKER_PORT, timeout);
+    int trackerfd;
+    struct sockaddr_in sa;
+
+    trackerfd = OpenTcpConnectSocket(0, TRACKER_HOST, TRACKER_PORT, timeout);
     if (trackerfd == -1) {
         fprintf(stderr, "Error opening tracker socket\n");
         return -1;
@@ -133,9 +140,30 @@ int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout) {
 
 void* THREAD_wait_for_tcp_messages(void *data) {
     int z;
-    int listenfd = OpenTcpSocket(NULL, CSTR(GBindPort));
-    if (listenfd == -1)
+    int listenfd;
+    struct sockaddr_in sa;
+
+    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (listenfd == -1) {
+        fprintf(stderr, "socket(): %s\n", strerror(errno));
         return NULL;
+    }
+    int yes=1;
+    z = setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+    if (z == -1) {
+        fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
+        return NULL;
+    }
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(GHostPort);
+    sa.sin_addr.s_addr = INADDR_ANY;
+    z = bind(listenfd, (struct sockaddr *) &sa, sizeof(sa));
+    if (z == -1) {
+        fprintf(stderr, "bind(): %s\n", strerror(errno));
+        return NULL;
+    }
 
     int backlog=50;
     z = listen(listenfd, backlog);
@@ -154,7 +182,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     Arena tscratch = ArenaNew(1024*1024);
     Array socketctxs = ArrayNew(&tscratch, 64, sizeof(SocketCtx));
 
-    printf("Listening for messages on port %s...\n", CSTR(GBindPort));
+    printf("Listening for messages on port %d...\n", GHostPort);
     while (1) {
         tmp_readfds = readfds;
         tmp_writefds = writefds;

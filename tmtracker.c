@@ -176,13 +176,35 @@ void* THREAD_wait_for_tcp_messages(void *data) {
 
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
     u8 msgno = MSGNO(msgbytes);
-    if (msgno == PING) {
+    if (msgno == KNOCK) {
+        String alias = StringNew0(&scratch);
+        String hostname = StringNew0(&scratch);
+        u16 hostport;
+        NetUnpack(msgbytes, msglen, "%b%s%s%w", &msgno, &alias, &hostname, &hostport);
+        printf("** KNOCK alias: %s' hostname: '%s' hostport: %d received from %s/%d **\n", CSTR(alias), CSTR(hostname), hostport, HostAddr_ipaddress(hostaddr), ntohs(HostAddr_port(hostaddr)));
+
+        struct sockaddr_in sa = SockAddrFromHostAddr(hostaddr);
+        sa.sin_port = htons(hostport);
+        HostAddr source_hostaddr = HostAddrFromSockAddr(&sa);
+
+        Buffer sendbuf = BufferNew(&scratch, 1024);
+        NetPackLen(&sendbuf, "%b%s%s%L%s", PING, CSTR(alias), CSTR(hostname), source_hostaddr, "hello");
+        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, GPeers, socketctxs, writefds, maxfd);
+
+        Peer peer;
+        peer.hostaddr = source_hostaddr;
+        peer.alias = StringDup(GPeers.arena, alias);
+        peer.hostname = StringDup(GPeers.arena, hostname);
+        Peer_add_or_replace(&GPeers, peer);
+        print_peers(GPeers);
+
+    } else if (msgno == PING) {
         String alias = StringNew0(&scratch);
         String hostname = StringNew0(&scratch);
         HostAddr hostaddr_from;
         String text = StringNew0(&scratch);
         NetUnpack(msgbytes, msglen, "%b%s%s%L%s", &msgno, &alias, &hostname, &hostaddr_from, &text);
-        printf("** PING alias: '%s' hostname: '%s' hostaddr_from: %s (port %d) text: '%s' **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(hostaddr_from), ntohs(HostAddr_port(hostaddr_from)), CSTR(text));
+        printf("** PING alias: '%s' hostname: '%s' hostaddr_from: %s/%d) text: '%s' **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(hostaddr_from), ntohs(HostAddr_port(hostaddr_from)), CSTR(text));
 
         Buffer sendbuf = BufferNew(&scratch, 1024);
 

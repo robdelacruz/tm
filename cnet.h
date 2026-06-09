@@ -33,7 +33,7 @@ int setsockopt0(int sockfd, int level, int optname, const void *optval, socklen_
 int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 
 int OpenTcpSocket(char *domain, char *port);
-int OpenTcpConnectSocket(char *bindhost, char *bindport, char *connecthost, char *connectport, struct timeval *timeout);
+int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, struct timeval *timeout);
 void ShutdownSocket(int fd);
 int NetRecv(int fd, Buffer *buf);
 int NetSend(int fd, Buffer *buf);
