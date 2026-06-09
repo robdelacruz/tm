@@ -318,7 +318,7 @@ void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 ms
         } else if (StringEquals(text, "hello")) {
             // Peer sent 'hello' directly
             Peer peer;
-            peer.hostaddr = hostaddr;
+            peer.hostaddr = hostaddr_from;
             peer.alias = StringDup(GPeers.arena, alias);
             peer.hostname = StringDup(GPeers.arena, hostname);
             Peer_add_or_replace(&GPeers, peer);

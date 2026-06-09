@@ -185,14 +185,17 @@ void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 ms
 
         struct sockaddr_in sa = SockAddrFromHostAddr(hostaddr);
         sa.sin_port = htons(hostport);
-        HostAddr source_hostaddr = HostAddrFromSockAddr(&sa);
 
         Buffer sendbuf = BufferNew(&scratch, 1024);
-        NetPackLen(&sendbuf, "%b%s%s%L%s", PING, CSTR(alias), CSTR(hostname), source_hostaddr, "hello");
-        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, GPeers, socketctxs, writefds, maxfd);
+        for (int i=0; i < GPeers.len; i++) {
+            BufferClear(&sendbuf);
+            Peer *p = ArrayItem(GPeers, i);
+            NetPackLen(&sendbuf, "%b%s%s%L%s", PING, CSTR(alias), CSTR(hostname), HostAddrFromSockAddr(&sa), "hello");
+            send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, GPeers, socketctxs, writefds, maxfd);
+        }
 
         Peer peer;
-        peer.hostaddr = source_hostaddr;
+        peer.hostaddr = HostAddrFromSockAddr(&sa);
         peer.alias = StringDup(GPeers.arena, alias);
         peer.hostname = StringDup(GPeers.arena, hostname);
         Peer_add_or_replace(&GPeers, peer);
