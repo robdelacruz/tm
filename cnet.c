@@ -175,8 +175,7 @@ int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *tim
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
-    //sa.sin_port = INADDR_ANY;
-    sa.sin_port = bindport;
+    sa.sin_port = htons(bindport);
     sa.sin_addr.s_addr = INADDR_ANY;
     z = bind(fd, (struct sockaddr *) &sa, sizeof(sa));
     if (z == -1) {

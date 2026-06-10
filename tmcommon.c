@@ -1,3 +1,20 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <assert.h>
+#include <signal.h>
+#include <limits.h>
+#include <time.h>
+#include <pthread.h>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include "clib.h"
 #include "cnet.h"
 #include "tmcommon.h"
@@ -18,18 +35,18 @@ int SocketCtx_find_by_fd2(Array ctxs, int fd) {
     }
     return -1;
 }
-SocketCtx *SocketCtx_find_by_hostaddr(Array ctxs, HostAddr hostaddr) {
+SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr) {
     for (int i=0; i < ctxs.len; i++) {
         SocketCtx *ctx = ArrayItem(ctxs, i);
-        if (ctx->hostaddr == hostaddr)
+        if (ctx->toaddr == toaddr)
             return ctx;
     }
     return NULL;
 }
-int SocketCtx_find_by_hostaddr2(Array ctxs, HostAddr hostaddr) {
+int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr) {
     for (int i=0; i < ctxs.len; i++) {
         SocketCtx *ctx = ArrayItem(ctxs, i);
-        if (ctx->hostaddr == hostaddr)
+        if (ctx->toaddr == toaddr)
             return i;
     }
     return -1;
@@ -39,7 +56,7 @@ void Peer_add_or_replace(Array *peers, Peer peer) {
     // Replace if a peer with the same hostaddr exists
     for (int i=0; i < peers->len; i++) {
         Peer *p = ArrayItem(*peers, i);
-        if (p->hostaddr == peer.hostaddr) {
+        if (p->toaddr == peer.toaddr) {
             ArrayReplace(peers, i, &peer);
             return;
         }
@@ -47,10 +64,10 @@ void Peer_add_or_replace(Array *peers, Peer peer) {
     ArrayAppend(peers, &peer);
 }
 
-void Peer_remove(Array *peers, HostAddr hostaddr) {
+void Peer_remove(Array *peers, HostAddr toaddr) {
     for (int i=0; i < peers->len; i++) {
         Peer *p = ArrayItem(*peers, i);
-        if (p->hostaddr == hostaddr) {
+        if (p->toaddr == toaddr) {
             ArrayRemove(peers, i);
             return;
         }
@@ -58,11 +75,77 @@ void Peer_remove(Array *peers, HostAddr hostaddr) {
 }
 
 void print_peers(Array peers) {
+    char *fromaddr_str, *toaddr_str;
+
     printf("Peers:\n");
     for (int i=0; i < peers.len; i++) {
         Peer *p = ArrayItem(peers, i);
-        printf("[%d] %s %s/%d\n", i+1, CSTR(p->alias), HostAddr_ipaddress(p->hostaddr), ntohs(HostAddr_port(p->hostaddr)));
+
+        fromaddr_str = strdup(HostAddr_ipaddress(p->fromaddr));
+        toaddr_str = strdup(HostAddr_ipaddress(p->toaddr));
+        printf("[%d] %s fromaddr: %s/%d toaddr: %s/%d\n", i+1, CSTR(p->alias), fromaddr_str, ntohs(HostAddr_port(p->fromaddr)), toaddr_str, ntohs(HostAddr_port(p->toaddr)));
+        free(fromaddr_str);
+        free(toaddr_str);
     }
 }
 
+int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd) {
+    int z;
+
+    // If peer socket has a write in progress, add send bytes to write queue.
+    SocketCtx *socketctx = SocketCtx_find_by_toaddr(*socketctxs, dest_hostaddr);
+    if (socketctx) {
+        BufferAppend(&socketctx->writebuf, msgbytes, msglen);
+        return 1;
+    }
+
+    // Create a new connect socket for dest_hostaddr.
+    int destfd = socket0(AF_INET, SOCK_STREAM, 0);
+    if (destfd == -1)
+        return -1;
+    int yes=1;
+    setsockopt0(destfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    printf("Sending msg to %s/%d\n", HostAddr_ipaddress(dest_hostaddr), ntohs(HostAddr_port(dest_hostaddr)));
+    struct sockaddr_in dest_sa = SockAddrFromHostAddr(dest_hostaddr);
+    z = connect0(destfd, (struct sockaddr *)&dest_sa, sizeof(dest_sa));
+    if (z == -1) {
+        ShutdownSocket(destfd);
+        return -1;
+    }
+
+    // Send bytes
+    Buffer sendbuf = BufferNew(&scratch, msglen);
+    BufferAppend(&sendbuf, msgbytes, msglen);
+    z = NetSend2(destfd, &sendbuf, writefds, maxfd);
+    if (z == -1) {
+        ShutdownSocket(destfd);
+        return -1;
+    }
+    if (z == 0) {
+        ShutdownSocket(destfd);
+        return 0;
+    }
+    if (z == 1) {
+        SocketCtx newctx;
+        newctx.fd = destfd;
+        newctx.fromaddr = 0;
+        newctx.toaddr = dest_hostaddr;
+        newctx.readbuf = BufferNew(socketctxs->arena, 1);
+        newctx.writebuf = BufferNew(socketctxs->arena, 64);
+        BufferAppend(&newctx.writebuf, sendbuf.bs, sendbuf.len);
+        newctx.msglen = 0;
+        ArrayAppend(socketctxs, &newctx);
+    }
+
+    ShutdownSocket(destfd);
+    return 0;
+}
+
+void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd) {
+    for (int i=0; i < peers.len; i++) {
+        Peer *p = ArrayItem(peers, i);
+        send_msg_to_hostaddr(scratch, msgbytes, msglen, p->toaddr, socketctxs, writefds, maxfd);
+    }
+}
 

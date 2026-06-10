@@ -20,18 +20,18 @@
 #include "tmcommon.h"
 
 #define TRACKER_HOST "127.0.0.1"
-#define TRACKER_PORT 8001
-#define LISTEN_PORT 9000
-#define SEND_PORT 10000
+#define TRACKER_PORT 9000
+#define SEND_PORT 8100
+#define LISTEN_PORT 8200
 
 void* THREAD_wait_for_tcp_messages(void *data);
-void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
+void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
-u16 GListenPort = LISTEN_PORT;
 u16 GSendPort = SEND_PORT;
+u16 GListenPort = LISTEN_PORT;
 
 String GAlias;
 String GHostname;
@@ -173,7 +173,8 @@ void* THREAD_wait_for_tcp_messages(void *data) {
 
                     SocketCtx socketctx;
                     socketctx.fd = socketfd;
-                    socketctx.hostaddr = HostAddrFromSockAddr((struct sockaddr_in *)&ss);
+                    socketctx.fromaddr = HostAddrFromSockAddr((struct sockaddr_in *)&ss);
+                    socketctx.toaddr = 0;
                     socketctx.readbuf = BufferNew(&tscratch, 64);
                     socketctx.writebuf = BufferNew(&tscratch, 64);
                     socketctx.msglen = 0;
@@ -215,7 +216,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                         } else {
                             // Read msg body (msglen bytes)
                             if (readbuf->len >= socketctx->msglen) {
-                                handle_msg(tscratch, socketfd, socketctx->hostaddr, readbuf->bs, socketctx->msglen, &socketctxs, &writefds, &maxfd);
+                                handle_msg(tscratch, socketfd, socketctx->fromaddr, readbuf->bs, socketctx->msglen, &socketctxs, &writefds, &maxfd);
                                 
                                 BufferShift(readbuf, socketctx->msglen);
                                 socketctx->msglen = 0;
@@ -244,98 +245,25 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     ShutdownSocket(listenfd);
 }
 
-void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
+void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
     u8 msgno = MSGNO(msgbytes);
-    if (msgno == PING) {
+
+    if (msgno == PEER_ONLINE) {
         String alias = StringNew0(&scratch);
         String hostname = StringNew0(&scratch);
-        HostAddr hostaddr_from;
-        String text = StringNew0(&scratch);
-        NetUnpack(msgbytes, msglen, "%b%s%s%L%s", &msgno, &alias, &hostname, &hostaddr_from, &text);
-        printf("** PING alias: '%s' hostname: '%s' hostaddr_from: %s/%d text: '%s' **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(hostaddr_from), ntohs(HostAddr_port(hostaddr_from)), CSTR(text));
+        HostAddr fromaddr;
+        HostAddr toaddr;
+        NetUnpack(msgbytes, msglen, "%b%s%s%L%L", &msgno, &alias, &hostname, &fromaddr, &toaddr);
 
-        Buffer sendbuf = BufferNew(&scratch, 1024);
+        printf("** PEER_ONLINE alias: %s' hostname: '%s' fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
 
-        if (StringEquals(text, "knock")) {
-            // Tracker forwarded 'knock', source address is in hostaddr_from 
-
-            // Add new peer from hostaddr_from 
-            Peer peer;
-            peer.hostaddr = hostaddr_from;
-            peer.alias = StringDup(GPeers.arena, alias);
-            peer.hostname = StringDup(GPeers.arena, hostname);
-            Peer_add_or_replace(&GPeers, peer);
-            print_peers(GPeers);
-
-            // Send back 'hello' to new peer that sent knock
-            NetPackLen(&sendbuf, "%b%s%s%L%s", PING, CSTR(GAlias), CSTR(GHostname), 0, "hello");
-            send_msg_to_hostaddr(scratch, sendbuf.bs, sendbuf.len, hostaddr_from, socketctxs, writefds, maxfd);
-        } else if (StringEquals(text, "hello")) {
-            // Peer sent 'hello' directly
-            Peer peer;
-            peer.hostaddr = hostaddr_from;
-            peer.alias = StringDup(GPeers.arena, alias);
-            peer.hostname = StringDup(GPeers.arena, hostname);
-            Peer_add_or_replace(&GPeers, peer);
-            print_peers(GPeers);
-        } else if (StringEquals(text, "bye")) {
-            // Tracker forwarded 'bye', source addressed is in hostaddr_from
-            Peer_remove(&GPeers, hostaddr_from);
-            print_peers(GPeers);
-        }
+        Peer peer;
+        peer.alias = StringDup(GPeers.arena, alias);
+        peer.hostname = StringDup(GPeers.arena, hostname);
+        peer.fromaddr = fromaddr;
+        peer.toaddr = toaddr;
+        ArrayAppend(&GPeers, &peer);
+        print_peers(GPeers);
     }
 }
-
-int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd) {
-    int z;
-
-    // If peer socket has a write in progress, add send bytes to write queue.
-    SocketCtx *socketctx = SocketCtx_find_by_hostaddr(*socketctxs, dest_hostaddr);
-    if (socketctx) {
-        BufferAppend(&socketctx->writebuf, msgbytes, msglen);
-        return 1;
-    }
-
-    // Create a new connect socket for dest_hostaddr.
-    int destfd = socket0(AF_INET, SOCK_STREAM, 0);
-    if (destfd == -1)
-        return -1;
-    int yes=1;
-    setsockopt0(destfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-
-    printf("Sending msg to %s/%d\n", HostAddr_ipaddress(dest_hostaddr), ntohs(HostAddr_port(dest_hostaddr)));
-    struct sockaddr_in dest_sa = SockAddrFromHostAddr(dest_hostaddr);
-    z = connect0(destfd, (struct sockaddr *)&dest_sa, sizeof(dest_sa));
-    if (z == -1) {
-        ShutdownSocket(destfd);
-        return -1;
-    }
-
-    // Send bytes
-    Buffer sendbuf = BufferNew(&scratch, msglen);
-    BufferAppend(&sendbuf, msgbytes, msglen);
-    z = NetSend2(destfd, &sendbuf, writefds, maxfd);
-    if (z == -1) {
-        ShutdownSocket(destfd);
-        return -1;
-    }
-    if (z == 0) {
-        ShutdownSocket(destfd);
-        return 0;
-    }
-    if (z == 1) {
-        SocketCtx newctx;
-        newctx.fd = destfd;
-        newctx.hostaddr = dest_hostaddr;
-        newctx.readbuf = BufferNew(socketctxs->arena, 1);
-        newctx.writebuf = BufferNew(socketctxs->arena, 64);
-        BufferAppend(&newctx.writebuf, sendbuf.bs, sendbuf.len);
-        newctx.msglen = 0;
-        ArrayAppend(socketctxs, &newctx);
-    }
-
-    ShutdownSocket(destfd);
-    return 0;
-}
-
 
