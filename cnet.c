@@ -107,21 +107,37 @@ int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     return z;
 }
 
-int OpenTcpSocket(char *domain, char *port) {
-    int z;
-    struct addrinfo *hostai;
+int GetIPV4Address(char *host, int port, struct sockaddr_in *sa) {
+    char portstr[10];
+    snprintf(portstr, sizeof(portstr), "%d", port);
+
     struct addrinfo hints = {0};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if (domain == NULL)
-        hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags = AI_PASSIVE;
 
-    z = getaddrinfo(domain, port, &hints, &hostai);
+    struct addrinfo *ai;
+    int z = getaddrinfo(host, portstr, &hints, &ai);
     if (z != 0) {
-        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(z));
+        fprintf(stderr, "getaddrinfo() %s/%s : %s\n", host, portstr, gai_strerror(z));
         return -1;
     }
-    int fd = socket(hostai->ai_family, hostai->ai_socktype, hostai->ai_protocol);
+
+    assert(ai->ai_family == AF_INET);
+    assert(ai->ai_addrlen == sizeof(struct sockaddr_in));
+    memcpy(sa, ai->ai_addr, sizeof(struct sockaddr_in));
+
+    freeaddrinfo(ai);
+    return 0;
+}
+
+int OpenTcpSocket(char *host, int port) {
+    int z;
+    struct sockaddr_in sa;
+
+    if (GetIPV4Address(host, port, &sa) == -1)
+        return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd == -1) {
         fprintf(stderr, "socket(): %s\n", strerror(errno));
         return -1;
@@ -130,22 +146,18 @@ int OpenTcpSocket(char *domain, char *port) {
     z = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
     if (z == -1) {
         fprintf(stderr, "setsockopt(): %s\n", strerror(errno));
-        freeaddrinfo(hostai);
         return -1;
     }
-    z = bind(fd, hostai->ai_addr, hostai->ai_addrlen);
+    z = bind(fd, (struct sockaddr *) &sa, sizeof(sa));
     if (z == -1) {
         fprintf(stderr, "OpenTcpSocket bind(): %s\n", strerror(errno));
-        freeaddrinfo(hostai);
         return -1;
     }
-    printf("OpenTcpSocket() binded to %s\n", SockAddr_ipaddress(hostai->ai_addr));
-    freeaddrinfo(hostai);
 
     return fd;
 }
 
-int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, struct timeval *timeout) {
+int OpenTcpConnectSocket(char *host, int port, struct timeval *timeout) {
     int z;
 
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -163,7 +175,7 @@ int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, str
     struct sockaddr_in sa;
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
-    sa.sin_port = bindport;
+    sa.sin_port = INADDR_ANY;
     sa.sin_addr.s_addr = INADDR_ANY;
     z = bind(fd, (struct sockaddr *) &sa, sizeof(sa));
     if (z == -1) {
@@ -171,23 +183,14 @@ int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, str
         return -1;
     }
 
-    struct addrinfo hints = {0};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-
-    struct addrinfo *connectai;
-    z = getaddrinfo(connecthost, connectport, &hints, &connectai);
-    if (z != 0) {
-        fprintf(stderr, "getaddrinfo() %s/%s : %s\n", connecthost, connectport, gai_strerror(z));
+    struct sockaddr_in sa_connect;
+    if (GetIPV4Address(host, port, &sa_connect) == -1)
         return -1;
-    }
-    z = connect(fd, connectai->ai_addr, connectai->ai_addrlen);
-    freeaddrinfo(connectai);
+    z = connect(fd, (struct sockaddr *) &sa_connect, sizeof(sa_connect));
     if (z == 0)
         goto connected;
     if (z == -1 && errno != EINPROGRESS) {
-        fprintf(stderr, "nonblocking connect() %s/%s: %s\n", connecthost, connectport, strerror(errno));
+        fprintf(stderr, "nonblocking connect() %s/%d: %s\n", host, port, strerror(errno));
         ShutdownSocket(fd);
         return -1;
     }
@@ -199,7 +202,7 @@ int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, str
         while (1) {
             int zz = select(fd+1, NULL, &writefds, NULL, timeout);
             if (zz == 0) {
-                fprintf(stderr, "nonblocking connect() timeout %s/%s\n", connecthost, connectport);
+                fprintf(stderr, "nonblocking connect() timeout %s/%d\n", host, port);
                 ShutdownSocket(fd);
                 return -1;
             }
@@ -486,3 +489,36 @@ void NetUnpack(char *bs, int bslen, char *fmt, ...) {
     va_end(args);
 }
 
+int NetSend_wait_until_complete(int fd, Buffer *sendbuf, struct timeval *timeout) {
+    int z = NetSend(fd, sendbuf);
+    if (z == -1)
+        return -1;
+    if (z == 0)
+        return 0;
+
+    fd_set writefds;
+    FD_ZERO(&writefds);
+    FD_SET(fd, &writefds);
+
+    while (1) {
+        z = select(fd+1, NULL, &writefds, NULL, timeout);
+        if (z == 0) {
+            fprintf(stderr, "NetSend_wait_until_complete timeout\n");
+            return -1;
+        }
+        if (z == -1 && errno == EINTR)
+            continue;
+        if (z == -1) {
+            fprintf(stderr, "NetSend_wait_until_complete select(): %s\n", strerror(errno));
+            return -1;
+        }
+        if (FD_ISSET(fd, &writefds)) {
+            z = NetSend(fd, sendbuf);
+            if (z == -1)
+                return -1;
+            if (z == 0)
+                break;
+        }
+    }
+    return 0;
+}

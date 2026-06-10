@@ -140,8 +140,15 @@ int main(int argc, char *argv[]) {
     arena = ArenaNew(255);
     scratch = ArenaNew(255);
 
-    splittest();
-    string0test();
+    int maxhash = 0;
+
+    u16 h1 = hash16("127.0.0.1/9001", maxhash);
+    u16 h2 = hash16("192.168.0.1/9002", maxhash);
+    u16 h3 = hash16("127.0.0.1/9003", maxhash);
+    u16 h4 = hash16("127.0.0.1/9004", maxhash);
+    u16 h5 = hash16("127.0.0.1/9005", maxhash);
+
+    printf("h1: %d\nh2: %d\nh3: %d\nh4: %d\nh5: %d\n", h1, h2, h3, h4, h5);
 
     return 0;
 }

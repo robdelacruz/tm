@@ -25,6 +25,23 @@ void *realloc0(void *ptr, size_t oldsize, size_t newsize) {
     return p;
 }
 
+#define HASHPRIME 31
+u16 hash16(char *k, int size) {
+    u16 hash=0;
+    char ch;
+    if (size == 0)
+        size = USHRT_MAX+1;
+
+    while (1) {
+        char ch = *k;
+        if (ch == 0)
+            break;
+        hash = (hash*HASHPRIME + ch) % size;
+        k++;
+    }
+    return hash;
+}
+
 Arena ArenaNew(u32 cap) {
     Arena a;
     if (cap == 0)

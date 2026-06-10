@@ -32,8 +32,9 @@ int getsockopt0(int sockfd, int level, int optname, void *optval, socklen_t *opt
 int setsockopt0(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 
-int OpenTcpSocket(char *domain, char *port);
-int OpenTcpConnectSocket(int bindport, char *connecthost, char *connectport, struct timeval *timeout);
+int GetIPV4Address(char *host, int port, struct sockaddr_in *sa);
+int OpenTcpSocket(char *host, int port);
+int OpenTcpConnectSocket(char *host, int port, struct timeval *timeout);
 void ShutdownSocket(int fd);
 int NetRecv(int fd, Buffer *buf);
 int NetSend(int fd, Buffer *buf);
@@ -41,5 +42,6 @@ int NetSend2(int fd, Buffer *buf, fd_set *writefds, int *maxfd);
 int NetPack(Buffer *buf, char *fmt, ...);
 int NetPackLen(Buffer *buf, char *fmt, ...);
 void NetUnpack(char *bs, int bslen, char *fmt, ...);
+int NetSend_wait_until_complete(int fd, Buffer *sendbuf, struct timeval *timeout);
 
 #endif

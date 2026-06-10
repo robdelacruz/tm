@@ -58,6 +58,8 @@ void panic(char *s);
 void *malloc0(size_t size);
 void *realloc0(void *ptr, size_t oldsize, size_t newsize);
 
+u16 hash16(char *k, int size);
+
 Arena ArenaNew(u32 cap);
 void ArenaFree(Arena *a);
 void ArenaReset(Arena *a);

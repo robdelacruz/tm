@@ -20,18 +20,17 @@
 #include "tmcommon.h"
 
 #define TRACKER_HOST "127.0.0.1"
-#define TRACKER_PORT "8001"
-//#define TRACKER_HOST "google.com"
-//#define TRACKER_PORT "8001"
+#define TRACKER_PORT 8001
 #define HOST_PORT 9000
 
-int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout);
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
 
+String GTrackerHost;
+u16 GTrackerPort = TRACKER_PORT;
 u16 GHostPort = HOST_PORT;
-char GHostPortStr[10];
+
 String GAlias;
 String GHostname;
 Array GPeers;
@@ -63,78 +62,31 @@ int main(int argc, char *argv[]) {
             StringAppend(&GAlias, ns);
         }
     }
-    snprintf(GHostPortStr, sizeof(GHostPortStr), "%d", GHostPort);
     printf("Hello %s/%s port %d\n", CSTR(GAlias), CSTR(GHostname), GHostPort);
 
+    GTrackerHost = StringNew(&arena, TRACKER_HOST);
     GPeers = ArrayNew(&arena, 64, sizeof(Peer));
+
+    struct timeval timeout = {2, 0};
+    int trackerfd = OpenTcpConnectSocket(CSTR(GTrackerHost), GTrackerPort, &timeout);
+    if (trackerfd == -1) {
+        printf("Can't connect to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
+        exit(1);
+    }
 
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
 
     Buffer sendbuf = BufferNew(&scratch, 128);
     NetPackLen(&sendbuf, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GHostPort);
-    struct timeval timeout = {2, 0};
-    z = send_msg_to_tracker(&sendbuf, &timeout);
-    if (z == -1)
+    timeout = (struct timeval) {2, 0};
+    z = NetSend_wait_until_complete(trackerfd, &sendbuf, &timeout);
+    if (z == -1) {
+        printf("Error sending knock to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         return 1;
+    }
 
     pthread_join(thread_wait_tcp, NULL);
-    return 0;
-}
-
-int send_msg_to_tracker(Buffer *sendbuf, struct timeval *timeout) {
-    int z;
-    int trackerfd;
-    struct sockaddr_in sa;
-
-    trackerfd = OpenTcpConnectSocket(0, TRACKER_HOST, TRACKER_PORT, timeout);
-    if (trackerfd == -1) {
-        fprintf(stderr, "Error opening tracker socket\n");
-        return -1;
-    }
-
-    z = NetSend(trackerfd, sendbuf);
-    if (z == -1) {
-        fprintf(stderr, "Error sending message to tracker (%s)\n", strerror(errno));
-        ShutdownSocket(trackerfd);
-        return -1;
-    }
-    if (z == 0) {
-        ShutdownSocket(trackerfd);
-        return 0;
-    }
-
-    fd_set writefds;
-    FD_ZERO(&writefds);
-    FD_SET(trackerfd, &writefds);
-
-    while (1) {
-        z = select(trackerfd+1, NULL, &writefds, NULL, timeout);
-        if (z == 0) {
-            fprintf(stderr, "Timeout sending message to tracker (%s)\n", strerror(errno));
-            ShutdownSocket(trackerfd);
-            return -1;
-        }
-        if (z == -1 && errno == EINTR)
-            continue;
-        if (z == -1) {
-            fprintf(stderr, "Error sending message to tracker (%s)\n", strerror(errno));
-            ShutdownSocket(trackerfd);
-            return -1;
-        }
-        if (FD_ISSET(trackerfd, &writefds)) {
-            z = NetSend(trackerfd, sendbuf);
-            if (z == -1) {
-                fprintf(stderr, "Error sending message to tracker (%s)\n", strerror(errno));
-                ShutdownSocket(trackerfd);
-                return -1;
-            }
-            if (z == 0)
-                break;
-        }
-    }
-
-    ShutdownSocket(trackerfd);
     return 0;
 }
 

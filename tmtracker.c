@@ -20,11 +20,14 @@
 #include "tmcommon.h"
 
 #define TRACKER_HOST "127.0.0.1"
-#define TRACKER_PORT "8001"
+#define TRACKER_PORT 8001
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd);
+
+String GTrackerHost;
+u16 GTrackerPort = TRACKER_PORT;
 
 Arena GArena, GScratch;
 Array GPeers;
@@ -33,6 +36,7 @@ int main(int argc, char *argv[]) {
     GArena = ArenaNew(64*1024);
     GScratch = ArenaNew(1024);
 
+    GTrackerHost = StringNew(&GArena, TRACKER_HOST);
     GPeers = ArrayNew(&GArena, 64, sizeof(Peer));
 
     pthread_t thread_wait_tcp;
@@ -45,7 +49,7 @@ int main(int argc, char *argv[]) {
 
 void* THREAD_wait_for_tcp_messages(void *data) {
     int z;
-    int listenfd = OpenTcpSocket(TRACKER_HOST, TRACKER_PORT);
+    int listenfd = OpenTcpSocket(CSTR(GTrackerHost), GTrackerPort);
     if (listenfd == -1)
         return NULL;
 
@@ -67,7 +71,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     Arena tscratch = ArenaNew(1024*1024);
     Array socketctxs = ArrayNew(&tarena, 64, sizeof(SocketCtx));
 
-    printf("Tracker listening for messages on port %s...\n", TRACKER_PORT);
+    printf("Tracker listening for messages on %s/%d...\n", CSTR(GTrackerHost), GTrackerPort);
     while (1) {
         tmp_readfds = readfds;
         tmp_writefds = writefds;
