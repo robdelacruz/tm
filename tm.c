@@ -21,7 +21,8 @@
 
 #define TRACKER_HOST "127.0.0.1"
 #define TRACKER_PORT 8001
-#define HOST_PORT 9000
+#define LISTEN_PORT 9000
+#define SEND_PORT 10000
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr hostaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -29,7 +30,8 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr des
 
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
-u16 GHostPort = HOST_PORT;
+u16 GListenPort = LISTEN_PORT;
+u16 GSendPort = SEND_PORT;
 
 String GAlias;
 String GHostname;
@@ -55,20 +57,21 @@ int main(int argc, char *argv[]) {
     if (argc > 1) {
         int n = atoi(argv[1]);
         if (n > 0) {
-            GHostPort += n;
+            GListenPort += n;
+            GSendPort += n;
 
             char ns[12];
             snprintf(ns, sizeof(ns), "%d", n);
             StringAppend(&GAlias, ns);
         }
     }
-    printf("Hello %s/%s port %d\n", CSTR(GAlias), CSTR(GHostname), GHostPort);
+    printf("Hello %s/%s listen port: %d send port: %d\n", CSTR(GAlias), CSTR(GHostname), GListenPort, GSendPort);
 
     GTrackerHost = StringNew(&arena, TRACKER_HOST);
     GPeers = ArrayNew(&arena, 64, sizeof(Peer));
 
     struct timeval timeout = {2, 0};
-    int trackerfd = OpenTcpConnectSocket(CSTR(GTrackerHost), GTrackerPort, &timeout);
+    int trackerfd = OpenTcpConnectSocket(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
     if (trackerfd == -1) {
         printf("Can't connect to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         exit(1);
@@ -78,7 +81,7 @@ int main(int argc, char *argv[]) {
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
 
     Buffer sendbuf = BufferNew(&scratch, 128);
-    NetPackLen(&sendbuf, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GHostPort);
+    NetPackLen(&sendbuf, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
     timeout = (struct timeval) {2, 0};
     z = NetSend_wait_until_complete(trackerfd, &sendbuf, &timeout);
     if (z == -1) {
@@ -109,7 +112,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
-    sa.sin_port = htons(GHostPort);
+    sa.sin_port = htons(GListenPort);
     sa.sin_addr.s_addr = INADDR_ANY;
     z = bind(listenfd, (struct sockaddr *) &sa, sizeof(sa));
     if (z == -1) {
@@ -134,7 +137,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     Arena tscratch = ArenaNew(1024*1024);
     Array socketctxs = ArrayNew(&tscratch, 64, sizeof(SocketCtx));
 
-    printf("Listening for messages on port %d...\n", GHostPort);
+    printf("Listening for messages on port %d...\n", GListenPort);
     while (1) {
         tmp_readfds = readfds;
         tmp_writefds = writefds;

@@ -37,6 +37,9 @@ int main(int argc, char *argv[]) {
     GScratch = ArenaNew(1024);
 
     GTrackerHost = StringNew(&GArena, TRACKER_HOST);
+    if (argc > 1 && atoi(argv[1]) > 0)
+        GTrackerPort = atoi(argv[1]);
+
     GPeers = ArrayNew(&GArena, 64, sizeof(Peer));
 
     pthread_t thread_wait_tcp;

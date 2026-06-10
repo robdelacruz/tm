@@ -34,7 +34,7 @@ int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 
 int GetIPV4Address(char *host, int port, struct sockaddr_in *sa);
 int OpenTcpSocket(char *host, int port);
-int OpenTcpConnectSocket(char *host, int port, struct timeval *timeout);
+int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *timeout);
 void ShutdownSocket(int fd);
 int NetRecv(int fd, Buffer *buf);
 int NetSend(int fd, Buffer *buf);
