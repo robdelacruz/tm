@@ -95,6 +95,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    while (1) {
+        char inputbuf[64];
+
+        printf("> ");
+        fgets(inputbuf, sizeof(inputbuf), stdin);
+        inputbuf[strlen(inputbuf)-1] = 0; // remove trailing \n
+
+        if (CSTR_EQUALS(inputbuf, "quit"))
+            break;
+    }
+
+    printf("Done with input.\n");
+
     pthread_join(thread_wait_tcp, NULL);
     return 0;
 }
@@ -241,7 +254,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                     if (socketfd > maxfd)
                         maxfd = socketfd;
 
-                    printf("New socketfd: %d\n", socketfd);
+                    //printf("New socketfd: %d\n", socketfd);
                 } else {
                     // Received bytes from socket
                     int socketfd = i;
@@ -300,6 +313,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     }
 
     ShutdownSocket(listenfd);
+    ArenaFree(&tscratch);
 }
 
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
