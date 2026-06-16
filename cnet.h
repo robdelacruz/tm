@@ -22,6 +22,7 @@ in_port_t HostAddr_port(HostAddr hostaddr);
 
 char *HostAddr_ipaddress(HostAddr hostaddr);
 void HostAddr_ipaddress2(HostAddr hostaddr, String *outstr);
+int HostAddr_ipaddr_equals(HostAddr addr1, HostAddr addr2);
 
 char *SockAddr_ipaddress(struct sockaddr *sa);
 void SockAddr_ipaddress2(struct sockaddr *sa, String *outstr);

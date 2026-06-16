@@ -22,6 +22,8 @@
 #define TRACKER_HOST "127.0.0.1"
 #define TRACKER_PORT 9000
 
+void parse_args(int argc, char **argv);
+
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -37,8 +39,9 @@ int main(int argc, char *argv[]) {
     GScratch = ArenaNew(1024);
 
     GTrackerHost = StringNew(&GArena, TRACKER_HOST);
-    if (argc > 1 && atoi(argv[1]) > 0)
-        GTrackerPort = atoi(argv[1]);
+    GTrackerPort = TRACKER_PORT;
+
+    parse_args(argc, argv);
 
     GPeers = ArrayNew(&GArena, 64, sizeof(Peer));
 
@@ -48,6 +51,24 @@ int main(int argc, char *argv[]) {
     pthread_join(thread_wait_tcp, NULL);
 
     return 0;
+}
+
+enum ParseArgs {SW_NONE, SW_TRACKERPORT};
+void parse_args(int argc, char **argv) {
+    enum ParseArgs state = SW_NONE;
+
+    for (int i=0; i < argc; i++) {
+        char *arg = argv[i];
+        if (state == SW_NONE) {
+            if (CSTR_EQUALS(arg, "-trackerport"))
+                state = SW_TRACKERPORT;
+            continue;
+        }
+
+        if (state == SW_TRACKERPORT)
+            GTrackerPort = atoi(arg);
+        state = SW_NONE;
+    }
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
@@ -192,15 +213,10 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 
         printf("** KNOCK alias: %s' hostname: '%s' listenport: %d received from %s/%d **\n", CSTR(alias), CSTR(hostname), listenport, HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
 
+        // toaddr has the same ip address as fromaddr, but with listenport as its port.
         struct sockaddr_in to_sa = SockAddrFromHostAddr(fromaddr);
         to_sa.sin_port = htons(listenport);
         HostAddr toaddr = HostAddrFromSockAddr(&to_sa);
-
-        Peer peer;
-        peer.alias = StringDup(GPeers.arena, alias);
-        peer.hostname = StringDup(GPeers.arena, hostname);
-        peer.fromaddr = fromaddr;
-        peer.toaddr = toaddr;
 
         // Inform all peers of new peer. 
         Buffer sendbuf = BufferNew(&scratch, 1024);
@@ -216,8 +232,21 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
             send_msg_to_hostaddr(scratch, sendbuf.bs, sendbuf.len, toaddr, socketctxs, writefds, maxfd);
         }
 
-        ArrayAppend(&GPeers, &peer);
+        Peer_add_or_replace2(&GPeers, alias, hostname, fromaddr, toaddr);
         print_peers(GPeers);
+    } else if (msgno == BYE) {
+        printf("** BYE ** received from %s/%d **\n", HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
+        if (!Peer_exists(GPeers, fromaddr))
+            return;
+
+        Peer_remove(&GPeers, fromaddr);
+        print_peers(GPeers);
+
+        // Inform all peers that this peer is going offline.
+        Buffer sendbuf = BufferNew(&scratch, 1024);
+        NetPackLen(&sendbuf, "%b%L", PEER_OFFLINE, fromaddr);
+        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, GPeers, socketctxs, writefds, maxfd);
+
     }
 }
 

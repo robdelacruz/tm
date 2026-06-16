@@ -50,4 +50,6 @@ if (z == -1) {
     return -1;
 }
 
+tm -listenport 8001 -sendport 8002 -trackerhost 127.0.0.2 -trackerport 9000 -alias rob -hostname bossa
+tmtracker -listenport 9000
 

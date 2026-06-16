@@ -24,23 +24,29 @@
 #define SEND_PORT 8100
 #define LISTEN_PORT 8200
 
+void sigint(int sig);
+void parse_args(int argc, char **argv);
+
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
-int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
 u16 GSendPort = SEND_PORT;
 u16 GListenPort = LISTEN_PORT;
-
 String GAlias;
 String GHostname;
+
 Array GPeers;
+int GTrackerFD=0;
+HostAddr GTrackerAddr=0;
 
 int main(int argc, char *argv[]) {
     int z;
     Arena arena = ArenaNew(64*1024);
     Arena scratch = ArenaNew(1024);
+
+    signal(SIGINT, sigint);
 
     if (getlogin() != NULL)
         GAlias = StringNew(&arena, getlogin());
@@ -53,26 +59,26 @@ int main(int argc, char *argv[]) {
     } else {
         GHostname = StringNew(&arena, "nohostname");
     }
-
-    if (argc > 1) {
-        int n = atoi(argv[1]);
-        if (n > 0) {
-            GListenPort += n;
-            GSendPort += n;
-
-            char ns[12];
-            snprintf(ns, sizeof(ns), "%d", n);
-            StringAppend(&GAlias, ns);
-        }
-    }
-    printf("Hello %s/%s listen port: %d send port: %d\n", CSTR(GAlias), CSTR(GHostname), GListenPort, GSendPort);
-
     GTrackerHost = StringNew(&arena, TRACKER_HOST);
+    GTrackerPort = TRACKER_PORT;
+
+    parse_args(argc, argv);
+
+    printf("TinyMsg listenport: %d sendport: %d user: %s/%s\n", GListenPort, GSendPort, CSTR(GAlias), CSTR(GHostname));
+    printf("Connected to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
+
+    struct sockaddr_in tracker_sa;
+    if (GetIPV4Address(CSTR(GTrackerHost), GTrackerPort, &tracker_sa) == -1) {
+        printf("Can't resolve tracker's (%s/%d) sockaddr\n", CSTR(GTrackerHost), GTrackerPort);
+        exit(1);
+    }
+    GTrackerAddr = HostAddrFromSockAddr(&tracker_sa);
+
     GPeers = ArrayNew(&arena, 64, sizeof(Peer));
 
     struct timeval timeout = {2, 0};
-    int trackerfd = OpenTcpConnectSocket(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
-    if (trackerfd == -1) {
+    GTrackerFD = OpenTcpConnectSocket(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
+    if (GTrackerFD == -1) {
         printf("Can't connect to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         exit(1);
     }
@@ -83,7 +89,7 @@ int main(int argc, char *argv[]) {
     Buffer sendbuf = BufferNew(&scratch, 128);
     NetPackLen(&sendbuf, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
     timeout = (struct timeval) {2, 0};
-    z = NetSend_wait_until_complete(trackerfd, &sendbuf, &timeout);
+    z = NetSend_wait_until_complete(GTrackerFD, &sendbuf, &timeout);
     if (z == -1) {
         printf("Error sending knock to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         return 1;
@@ -91,6 +97,57 @@ int main(int argc, char *argv[]) {
 
     pthread_join(thread_wait_tcp, NULL);
     return 0;
+}
+
+void sigint(int sig) {
+    Arena scratch = ArenaNew(256);
+    Buffer sendbuf = BufferNew(&scratch, 50);
+    NetPackLen(&sendbuf, "%b", BYE);
+
+    printf("Sending bye to tracker...");
+    struct timeval timeout = {2, 0};
+    NetSend_wait_until_complete(GTrackerFD, &sendbuf, &timeout);
+
+    printf("Done\n");
+    exit(0);
+}
+
+enum ParseArgs {SW_NONE, SW_LISTENPORT, SW_SENDPORT, SW_TRACKERHOST, SW_TRACKERPORT, SW_ALIAS, SW_HOSTNAME};
+void parse_args(int argc, char **argv) {
+    enum ParseArgs state = SW_NONE;
+
+    for (int i=0; i < argc; i++) {
+        char *arg = argv[i];
+        if (state == SW_NONE) {
+            if (CSTR_EQUALS(arg, "-listenport"))
+                state = SW_LISTENPORT;
+            else if (CSTR_EQUALS(arg, "-sendport"))
+                state = SW_SENDPORT;
+            else if (CSTR_EQUALS(arg, "-trackerhost"))
+                state = SW_TRACKERHOST;
+            else if (CSTR_EQUALS(arg, "-trackerport"))
+                state = SW_TRACKERPORT;
+            else if (CSTR_EQUALS(arg, "-alias"))
+                state = SW_ALIAS;
+            else if (CSTR_EQUALS(arg, "-hostname"))
+                state = SW_HOSTNAME;
+            continue;
+        }
+
+        if (state == SW_LISTENPORT)
+            GListenPort = atoi(arg);
+        else if (state == SW_SENDPORT)
+            GSendPort = atoi(arg);
+        else if (state == SW_TRACKERPORT)
+            GTrackerPort = atoi(arg);
+        else if (state == SW_TRACKERHOST)
+            StringAssign(&GTrackerHost, arg);
+        else if (state == SW_ALIAS)
+            StringAssign(&GAlias, arg);
+        else if (state == SW_HOSTNAME)
+            StringAssign(&GHostname, arg);
+        state = SW_NONE;
+    }
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
@@ -249,20 +306,31 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
     u8 msgno = MSGNO(msgbytes);
 
     if (msgno == PEER_ONLINE) {
+        // Should only come from tracker
+        if (!HostAddr_ipaddr_equals(fromaddr, GTrackerAddr))
+            return;
+
         String alias = StringNew0(&scratch);
         String hostname = StringNew0(&scratch);
-        HostAddr fromaddr;
-        HostAddr toaddr;
-        NetUnpack(msgbytes, msglen, "%b%s%s%L%L", &msgno, &alias, &hostname, &fromaddr, &toaddr);
+        HostAddr peer_fromaddr;
+        HostAddr peer_toaddr;
+        NetUnpack(msgbytes, msglen, "%b%s%s%L%L", &msgno, &alias, &hostname, &peer_fromaddr, &peer_toaddr);
 
-        printf("** PEER_ONLINE alias: %s' hostname: '%s' fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
+        printf("** PEER_ONLINE alias: %s' hostname: '%s' fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)), HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
 
-        Peer peer;
-        peer.alias = StringDup(GPeers.arena, alias);
-        peer.hostname = StringDup(GPeers.arena, hostname);
-        peer.fromaddr = fromaddr;
-        peer.toaddr = toaddr;
-        ArrayAppend(&GPeers, &peer);
+        Peer_add_or_replace2(&GPeers, alias, hostname, peer_fromaddr, peer_toaddr);
+        print_peers(GPeers);
+    } else if (msgno == PEER_OFFLINE) {
+        // Should only come from tracker
+        if (!HostAddr_ipaddr_equals(fromaddr, GTrackerAddr))
+            return;
+
+        HostAddr peer_fromaddr;
+        NetUnpack(msgbytes, msglen, "%b%L", &msgno, &peer_fromaddr);
+
+        printf("** PEER_OFFLINE fromaddr: %s/%d **\n", HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)));
+
+        Peer_remove(&GPeers, peer_fromaddr);
         print_peers(GPeers);
     }
 }

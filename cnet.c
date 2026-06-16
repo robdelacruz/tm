@@ -52,6 +52,11 @@ void HostAddr_ipaddress2(HostAddr hostaddr, String *outstr) {
     }
     StringAssign(outstr, ipaddr);
 }
+int HostAddr_ipaddr_equals(HostAddr addr1, HostAddr addr2) {
+    if (HostAddr_addr(addr1).s_addr == HostAddr_addr(addr2).s_addr)
+        return 1;
+    return 0;
+}
 
 #define SIN_ADDR(sa) ( (void *) &((struct sockaddr_in *)sa)->sin_addr )
 #define SIN6_ADDR(sa) ( (void *) &((struct sockaddr_in6 *)sa)->sin6_addr )

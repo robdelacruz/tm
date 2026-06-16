@@ -3,9 +3,10 @@
 
 #define MSGNO(bs) (*((u8 *)bs))
 #define KNOCK 1
-#define PEER_ONLINE 2
+#define BYE 2
+#define PEER_ONLINE 3
+#define PEER_OFFLINE 4
 
-// KNOCK
 typedef struct {
     u8 msgno;
     String alias;
@@ -15,11 +16,20 @@ typedef struct {
 
 typedef struct {
     u8 msgno;
+} ByeMsg;
+
+typedef struct {
+    u8 msgno;
     String alias;
     String hostname;
     HostAddr fromaddr;
     HostAddr toaddr;
 } PeerOnlineMsg;
+
+typedef struct {
+    u8 msgno;
+    HostAddr fromaddr;
+} PeerOfflineMsg;
 
 typedef struct {
     String alias;
@@ -42,8 +52,10 @@ int SocketCtx_find_by_fd2(Array ctxs, int fd);
 SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr);
 int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr);
 
-void Peer_add_or_replace(Array *peers, Peer peer);
-void Peer_remove(Array *peers, HostAddr toaddr);
+int Peer_exists(Array peers, HostAddr fromaddr);
+void Peer_add_or_replace(Array *peers, Peer *peer);
+void Peer_add_or_replace2(Array *peers, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
+void Peer_remove(Array *peers, HostAddr fromaddr);
 void print_peers(Array peers);
 
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);

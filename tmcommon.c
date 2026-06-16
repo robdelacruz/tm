@@ -52,22 +52,41 @@ int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr) {
     return -1;
 }
 
-void Peer_add_or_replace(Array *peers, Peer peer) {
+int Peer_exists(Array peers, HostAddr fromaddr) {
+    for (int i=0; i < peers.len; i++) {
+        Peer *p = ArrayItem(peers, i);
+        if (p->fromaddr == fromaddr)
+            return 1;
+    }
+    return 0;
+}
+
+void Peer_add_or_replace(Array *peers, Peer *peer) {
     // Replace if a peer with the same hostaddr exists
     for (int i=0; i < peers->len; i++) {
         Peer *p = ArrayItem(*peers, i);
-        if (p->toaddr == peer.toaddr) {
-            ArrayReplace(peers, i, &peer);
+        if (p->toaddr == peer->toaddr) {
+            ArrayReplace(peers, i, peer);
             return;
         }
     }
-    ArrayAppend(peers, &peer);
+    ArrayAppend(peers, peer);
 }
 
-void Peer_remove(Array *peers, HostAddr toaddr) {
+void Peer_add_or_replace2(Array *peers, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr) {
+    Peer peer;
+    peer.alias = StringDup(peers->arena, alias);
+    peer.hostname = StringDup(peers->arena, hostname);
+    peer.fromaddr = fromaddr;
+    peer.toaddr = toaddr;
+
+    Peer_add_or_replace(peers, &peer);
+}
+
+void Peer_remove(Array *peers, HostAddr fromaddr) {
     for (int i=0; i < peers->len; i++) {
         Peer *p = ArrayItem(*peers, i);
-        if (p->toaddr == toaddr) {
+        if (p->fromaddr == fromaddr) {
             ArrayRemove(peers, i);
             return;
         }
@@ -77,7 +96,12 @@ void Peer_remove(Array *peers, HostAddr toaddr) {
 void print_peers(Array peers) {
     char *fromaddr_str, *toaddr_str;
 
-    printf("Peers:\n");
+    if (peers.len == 0) {
+        printf("Peers (0)\n");
+        return;
+    }
+
+    printf("Peers (%d):\n", peers.len);
     for (int i=0; i < peers.len; i++) {
         Peer *p = ArrayItem(peers, i);
 
@@ -89,25 +113,25 @@ void print_peers(Array peers) {
     }
 }
 
-int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd) {
+int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr toaddr, Array *socketctxs, fd_set *writefds, int *maxfd) {
     int z;
 
     // If peer socket has a write in progress, add send bytes to write queue.
-    SocketCtx *socketctx = SocketCtx_find_by_toaddr(*socketctxs, dest_hostaddr);
+    SocketCtx *socketctx = SocketCtx_find_by_toaddr(*socketctxs, toaddr);
     if (socketctx) {
         BufferAppend(&socketctx->writebuf, msgbytes, msglen);
         return 1;
     }
 
-    // Create a new connect socket for dest_hostaddr.
+    // Create a new connect socket for toaddr.
     int destfd = socket0(AF_INET, SOCK_STREAM, 0);
     if (destfd == -1)
         return -1;
     int yes=1;
     setsockopt0(destfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 
-    printf("Sending msg to %s/%d\n", HostAddr_ipaddress(dest_hostaddr), ntohs(HostAddr_port(dest_hostaddr)));
-    struct sockaddr_in dest_sa = SockAddrFromHostAddr(dest_hostaddr);
+    printf("Sending msg to %s/%d\n", HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
+    struct sockaddr_in dest_sa = SockAddrFromHostAddr(toaddr);
     z = connect0(destfd, (struct sockaddr *)&dest_sa, sizeof(dest_sa));
     if (z == -1) {
         ShutdownSocket(destfd);
@@ -130,7 +154,7 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr des
         SocketCtx newctx;
         newctx.fd = destfd;
         newctx.fromaddr = 0;
-        newctx.toaddr = dest_hostaddr;
+        newctx.toaddr = toaddr;
         newctx.readbuf = BufferNew(socketctxs->arena, 1);
         newctx.writebuf = BufferNew(socketctxs->arena, 64);
         BufferAppend(&newctx.writebuf, sendbuf.bs, sendbuf.len);

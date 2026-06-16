@@ -8,6 +8,7 @@
 #define CAST(v, type) ((type) (v))
 #define STRING(p) ((String) {p, strlen(p)})
 #define CSTR(str) (str.bs? str.bs : "")
+#define CSTR_EQUALS(s1, s2) (strcmp(s1, s2) == 0)
 
 typedef char i8;
 typedef short i16;

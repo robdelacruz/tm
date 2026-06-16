@@ -21,5 +21,5 @@ tmtracker: tmtracker.c clib.c cnet.c tmcommon.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS) 
 
 clean:
-	rm -rf tm t t2
+	rm -rf tm tmtracker t t2
 
