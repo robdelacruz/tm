@@ -29,6 +29,8 @@ void sigint(int sig);
 void parse_args(int argc, char **argv);
 void send_bye(Arena scratch);
 int execute_command(Arena scratch, char *cmd);
+Array tokenize_command(Arena *arena, char *cmd);
+void array_join_strings(Array strs, int istart, int iend, String *outstr);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -108,9 +110,6 @@ int main(int argc, char *argv[]) {
         inputbuf[strlen(inputbuf)-1] = 0; // remove trailing \n
         if (execute_command(scratch, inputbuf) == 1)
             break;
-
-        if (CSTR_EQUALS(inputbuf, "quit"))
-            break;
     }
 
     // Break out of select() loop in THREAD_wait_for_tcp_messages().
@@ -181,49 +180,9 @@ void parse_args(int argc, char **argv) {
     }
 }
 
-enum ParseCmd {S1_NONE, S1_SPACE, S1_CHAR, S1_EOF};
+enum ExecState {EXEC_START, EXEC_SEND, EXEC_SENDALIAS};
 int execute_command(Arena scratch, char *cmd) {
-    Array tokens = ArrayNew(&scratch, 16, sizeof(String));
-
-    enum ParseCmd state = S1_SPACE;
-    String token = StringNew0(&scratch);
-
-    int cmdlen = strlen(cmd);
-    for (int i=0; i <= cmdlen; i++) {
-        char ch = cmd[i];
-
-        if (state == S1_NONE) {
-            if (isalnum(ch)) {
-                StringAppendChar(&token, ch);
-                state = S1_CHAR;
-            } else if (isspace(ch)) {
-                state = S1_SPACE;
-            } else if (ch == '\0') {
-                state = S1_EOF;
-            }
-        } else if (state == S1_SPACE) {
-            if (isalnum(ch)) {
-                StringAppendChar(&token, ch);
-                state = S1_CHAR;
-            } else if (isspace(ch)) {
-                state = S1_SPACE;
-            } else if (ch == '\0') {
-                state = S1_EOF;
-            }
-        } else if (state == S1_CHAR) {
-            if (isalnum(ch)) {
-                StringAppendChar(&token, ch);
-                state = S1_CHAR;
-            } else if (isspace(ch)) {
-                ArrayAppend(&tokens, &token);
-                token = StringNew0(&scratch);
-                state = S1_SPACE;
-            } else if (ch == '\0') {
-                ArrayAppend(&tokens, &token);
-                state = S1_EOF;
-            }
-        }
-    }
+    Array tokens = tokenize_command(&scratch, cmd);
 
 //    printf("execute_command() tokens (%d):\n", tokens.len);
 //    for (int i=0; i < tokens.len; i++) {
@@ -231,10 +190,104 @@ int execute_command(Arena scratch, char *cmd) {
 //        printf("[%d] %s\n", i, CSTR(*tok));
 //    }
 
-    if (tokens.len > 0 && StringEquals(*((String *)ArrayItem(tokens, 0)), "quit"))
-        return 1;
+    if (tokens.len == 0)
+        return 0;
+
+    String sendalias;
+    String chattext = StringNew0(&scratch);
+
+    enum ExecState state = EXEC_START;
+    for (int i=0; i < tokens.len; i++) {
+        String *ptoken = ArrayItem(tokens, i);
+        String token = *ptoken;
+
+        if (state == EXEC_START) {
+            if (StringEquals(token, "quit") || StringEquals(token, "bye")) {
+                return 1;
+            } else if (StringEquals(token, "knock")) {
+                return 0;
+            } else if (StringEquals(token, "peers")) {
+                print_peers(GPeers);
+                return 0;
+            } else if (StringEquals(token, "chats")) {
+                return 0;
+            } else if (StringEquals(token, "send")) {
+                state = EXEC_SEND;
+            }
+        } else if (state == EXEC_SEND) {
+            sendalias = token;
+            state = EXEC_SENDALIAS;
+        } else if (state == EXEC_SENDALIAS) {
+            array_join_strings(tokens, i, tokens.len-1, &chattext);
+            if (chattext.len == 0)
+                return 0;
+
+            //todo: send chattext to sendalias
+            return 0;
+        }
+    }
 
     return 0;
+}
+
+enum TokenizeState {TOKENIZE_START, TOKENIZE_SPACE, TOKENIZE_CHAR, TOKENIZE_EOF};
+Array tokenize_command(Arena *arena, char *cmd) {
+    Array tokens = ArrayNew(arena, 16, sizeof(String));
+    enum TokenizeState state = TOKENIZE_SPACE;
+    String token = StringNew0(arena);
+
+    int cmdlen = strlen(cmd);
+    for (int i=0; i <= cmdlen; i++) {
+        char ch = cmd[i];
+
+        if (state == TOKENIZE_START) {
+            if (isalnum(ch)) {
+                StringAppendChar(&token, ch);
+                state = TOKENIZE_CHAR;
+            } else if (isspace(ch)) {
+                state = TOKENIZE_SPACE;
+            } else if (ch == '\0') {
+                state = TOKENIZE_EOF;
+            }
+        } else if (state == TOKENIZE_SPACE) {
+            if (isalnum(ch)) {
+                StringAppendChar(&token, ch);
+                state = TOKENIZE_CHAR;
+            } else if (isspace(ch)) {
+                state = TOKENIZE_SPACE;
+            } else if (ch == '\0') {
+                state = TOKENIZE_EOF;
+            }
+        } else if (state == TOKENIZE_CHAR) {
+            if (isalnum(ch)) {
+                StringAppendChar(&token, ch);
+                state = TOKENIZE_CHAR;
+            } else if (isspace(ch)) {
+                ArrayAppend(&tokens, &token);
+                token = StringNew0(arena);
+                state = TOKENIZE_SPACE;
+            } else if (ch == '\0') {
+                ArrayAppend(&tokens, &token);
+                state = TOKENIZE_EOF;
+            }
+        }
+    }
+
+    return tokens;
+}
+
+void array_join_strings(Array strs, int istart, int iend, String *outstr) {
+    StringAssign(outstr, "");
+
+    if (iend > strs.len-1)
+        iend = strs.len-1;
+
+    for (int i=istart; i <= iend; i++) {
+        String *s = ArrayItem(strs, i);
+        StringAppend(outstr, CSTRP(s));
+        if (i < iend)
+            StringAppend(outstr, " ");
+    }
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
