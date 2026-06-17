@@ -7,7 +7,8 @@
 #define memzero(p, v) (memset(p, 0, sizeof(v)))
 #define CAST(v, type) ((type) (v))
 #define STRING(p) ((String) {p, strlen(p)})
-#define CSTR(str) (str.bs? str.bs : "")
+#define CSTR(str) ((str).bs? (str).bs : "")
+#define CSTRP(strp) (strp->bs? strp->bs : "")
 #define CSTR_EQUALS(s1, s2) (strcmp(s1, s2) == 0)
 
 typedef char i8;
@@ -75,6 +76,7 @@ String StringNewFromBytes(Arena *arena, char *bs, int bslen);
 String StringDup(Arena *arena, String src);
 String StringFormat(Arena *arena, const char *fmt, ...);
 void StringAppend(String *str, char *s);
+void StringAppendChar(String *str, char ch);
 void StringAssign(String *str, char *s);
 void StringAssignFromBytes(String *str, char *bs, int bslen);
 void StringAssignFormat(String *str, const char *fmt, ...);

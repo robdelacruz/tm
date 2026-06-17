@@ -149,6 +149,12 @@ void StringAppend(String *str, char *s) {
     str->len += slen;
     str->bs[str->len] = 0;
 }
+void StringAppendChar(String *str, char ch) {
+    char s[2];
+    s[0] = ch;
+    s[1] = 0;
+    StringAppend(str, s);
+}
 void StringAssign(String *str, char *s) {
     *str = StringNew(str->arena, s);
 }

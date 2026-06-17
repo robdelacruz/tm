@@ -8,6 +8,7 @@
 #include <limits.h>
 #include <time.h>
 #include <pthread.h>
+#include <ctype.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -26,6 +27,8 @@
 
 void sigint(int sig);
 void parse_args(int argc, char **argv);
+void send_bye(Arena scratch);
+int execute_command(Arena scratch, char *cmd);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -40,6 +43,8 @@ String GHostname;
 Array GPeers;
 int GTrackerFD=0;
 HostAddr GTrackerAddr=0;
+
+int GUnblockSelect_writefd=0;
 
 int main(int argc, char *argv[]) {
     int z;
@@ -101,28 +106,41 @@ int main(int argc, char *argv[]) {
         printf("> ");
         fgets(inputbuf, sizeof(inputbuf), stdin);
         inputbuf[strlen(inputbuf)-1] = 0; // remove trailing \n
+        if (execute_command(scratch, inputbuf) == 1)
+            break;
 
         if (CSTR_EQUALS(inputbuf, "quit"))
             break;
     }
 
-    printf("Done with input.\n");
+    // Break out of select() loop in THREAD_wait_for_tcp_messages().
+    char writebuf[] = "1";
+    z = write(GUnblockSelect_writefd, writebuf, sizeof(writebuf));
+    if (z == -1)
+        fprintf(stderr, "write(): %s\n", strerror(errno));
+    assert(z > 0);
+
+    send_bye(scratch);
+    ShutdownSocket(GTrackerFD);
 
     pthread_join(thread_wait_tcp, NULL);
+
+    printf("Bye.\n");
     return 0;
 }
 
 void sigint(int sig) {
     Arena scratch = ArenaNew(256);
+    send_bye(scratch);
+    printf("Ctrl-C Bye.\n");
+    exit(0);
+}
+
+void send_bye(Arena scratch) {
     Buffer sendbuf = BufferNew(&scratch, 50);
     NetPackLen(&sendbuf, "%b", BYE);
-
-    printf("Sending bye to tracker...");
     struct timeval timeout = {2, 0};
     NetSend_wait_until_complete(GTrackerFD, &sendbuf, &timeout);
-
-    printf("Done\n");
-    exit(0);
 }
 
 enum ParseArgs {SW_NONE, SW_LISTENPORT, SW_SENDPORT, SW_TRACKERHOST, SW_TRACKERPORT, SW_ALIAS, SW_HOSTNAME};
@@ -161,6 +179,62 @@ void parse_args(int argc, char **argv) {
             StringAssign(&GHostname, arg);
         state = SW_NONE;
     }
+}
+
+enum ParseCmd {S1_NONE, S1_SPACE, S1_CHAR, S1_EOF};
+int execute_command(Arena scratch, char *cmd) {
+    Array tokens = ArrayNew(&scratch, 16, sizeof(String));
+
+    enum ParseCmd state = S1_SPACE;
+    String token = StringNew0(&scratch);
+
+    int cmdlen = strlen(cmd);
+    for (int i=0; i <= cmdlen; i++) {
+        char ch = cmd[i];
+
+        if (state == S1_NONE) {
+            if (isalnum(ch)) {
+                StringAppendChar(&token, ch);
+                state = S1_CHAR;
+            } else if (isspace(ch)) {
+                state = S1_SPACE;
+            } else if (ch == '\0') {
+                state = S1_EOF;
+            }
+        } else if (state == S1_SPACE) {
+            if (isalnum(ch)) {
+                StringAppendChar(&token, ch);
+                state = S1_CHAR;
+            } else if (isspace(ch)) {
+                state = S1_SPACE;
+            } else if (ch == '\0') {
+                state = S1_EOF;
+            }
+        } else if (state == S1_CHAR) {
+            if (isalnum(ch)) {
+                StringAppendChar(&token, ch);
+                state = S1_CHAR;
+            } else if (isspace(ch)) {
+                ArrayAppend(&tokens, &token);
+                token = StringNew0(&scratch);
+                state = S1_SPACE;
+            } else if (ch == '\0') {
+                ArrayAppend(&tokens, &token);
+                state = S1_EOF;
+            }
+        }
+    }
+
+//    printf("execute_command() tokens (%d):\n", tokens.len);
+//    for (int i=0; i < tokens.len; i++) {
+//        String *tok = ArrayItem(tokens, i);
+//        printf("[%d] %s\n", i, CSTR(*tok));
+//    }
+
+    if (tokens.len > 0 && StringEquals(*((String *)ArrayItem(tokens, 0)), "quit"))
+        return 1;
+
+    return 0;
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
@@ -204,11 +278,22 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     FD_SET(listenfd, &readfds);
     int maxfd = listenfd;
 
+    // unblockselect_pipefds[0]: read
+    // unblockselect_pipefds[1]: write
+    int pipefds[2];
+    z = pipe(pipefds);
+    assert(z == 0);
+    GUnblockSelect_writefd = pipefds[1];
+    FD_SET(pipefds[0], &readfds);
+    if (pipefds[0] > maxfd)
+        maxfd = pipefds[0];
+
     Arena tscratch = ArenaNew(1024*1024);
     Array socketctxs = ArrayNew(&tscratch, 64, sizeof(SocketCtx));
 
-    printf("Listening for messages on port %d...\n", GListenPort);
-    while (1) {
+    //printf("Listening for messages on port %d...\n", GListenPort);
+    int is_running = 1;
+    while (is_running) {
         tmp_readfds = readfds;
         tmp_writefds = writefds;
 
@@ -224,6 +309,15 @@ void* THREAD_wait_for_tcp_messages(void *data) {
 
         for (int i=0; i <= maxfd; i++) {
             if (FD_ISSET(i, &tmp_readfds)) {
+                // This provides a way for the program to break out of the select() loop.
+                // write to GUnblockSelect_writefd to break out of loop.
+                if (i == pipefds[0]) {
+                    char buf[10];
+                    read(i, buf, sizeof(buf));
+                    is_running = 0;
+                    break;
+                }
+
                 if (i == listenfd) {
                     // New socket connection
                     struct sockaddr_storage ss;
@@ -314,6 +408,7 @@ void* THREAD_wait_for_tcp_messages(void *data) {
 
     ShutdownSocket(listenfd);
     ArenaFree(&tscratch);
+    return NULL;
 }
 
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
