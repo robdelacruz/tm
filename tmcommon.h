@@ -2,10 +2,11 @@
 #include "cnet.h"
 
 #define MSGNO(bs) (*((u8 *)bs))
-#define KNOCK 1
-#define BYE 2
-#define PEER_ONLINE 3
-#define PEER_OFFLINE 4
+#define PEER_ONLINE 1
+#define PEER_OFFLINE 2
+#define KNOCK 3
+#define BYE 4
+#define CHATTEXT 5
 
 typedef struct {
     u8 msgno;
@@ -32,6 +33,11 @@ typedef struct {
 } PeerOfflineMsg;
 
 typedef struct {
+    u8 msgno;
+    String text;
+} ChatTextMsg;
+
+typedef struct {
     String alias;
     String hostname;
     HostAddr fromaddr;
@@ -47,6 +53,14 @@ typedef struct {
     u16 msglen;
 } SocketCtx;
 
+typedef struct {
+    time_t dt;
+    String alias;
+    String hostname;
+    HostAddr fromaddr;
+    String text;
+} ChatText;
+
 SocketCtx *SocketCtx_find_by_fd(Array ctxs, int fd);
 int SocketCtx_find_by_fd2(Array ctxs, int fd);
 SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr);
@@ -56,6 +70,7 @@ int Peer_exists(Array peers, HostAddr fromaddr);
 void Peer_add_or_replace(Array *peers, Peer *peer);
 void Peer_add_or_replace2(Array *peers, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
 void Peer_remove(Array *peers, HostAddr fromaddr);
+Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr);
 void print_peers(Array peers);
 
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);

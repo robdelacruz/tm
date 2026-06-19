@@ -9,6 +9,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <ctype.h>
+#include <stdarg.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -27,13 +28,12 @@
 
 void sigint(int sig);
 void parse_args(int argc, char **argv);
-void send_bye(Arena scratch);
 int execute_command(Arena scratch, char *cmd);
-Array tokenize_command(Arena *arena, char *cmd);
-void array_join_strings(Array strs, int istart, int iend, String *outstr);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
+
+int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
 
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
     GPeers = ArrayNew(&arena, 64, sizeof(Peer));
 
     struct timeval timeout = {2, 0};
-    GTrackerFD = OpenTcpConnectSocket(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
+    GTrackerFD = OpenTcpConnectSocket3(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
     if (GTrackerFD == -1) {
         printf("Can't connect to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         exit(1);
@@ -93,10 +93,7 @@ int main(int argc, char *argv[]) {
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
 
-    Buffer sendbuf = BufferNew(&scratch, 128);
-    NetPackLen(&sendbuf, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
-    timeout = (struct timeval) {2, 0};
-    z = NetSend_wait_until_complete(GTrackerFD, &sendbuf, &timeout);
+    z = SendMsg(GTrackerFD, 128, &timeout, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
     if (z == -1) {
         printf("Error sending knock to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         return 1;
@@ -119,7 +116,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "write(): %s\n", strerror(errno));
     assert(z > 0);
 
-    send_bye(scratch);
+    SendMsg(GTrackerFD, 10, &timeout, "%b", BYE);
     ShutdownSocket(GTrackerFD);
 
     pthread_join(thread_wait_tcp, NULL);
@@ -129,17 +126,10 @@ int main(int argc, char *argv[]) {
 }
 
 void sigint(int sig) {
-    Arena scratch = ArenaNew(256);
-    send_bye(scratch);
+    struct timeval timeout = {2, 0};
+    SendMsg(GTrackerFD, 10, &timeout, "%b", BYE);
     printf("Ctrl-C Bye.\n");
     exit(0);
-}
-
-void send_bye(Arena scratch) {
-    Buffer sendbuf = BufferNew(&scratch, 50);
-    NetPackLen(&sendbuf, "%b", BYE);
-    struct timeval timeout = {2, 0};
-    NetSend_wait_until_complete(GTrackerFD, &sendbuf, &timeout);
 }
 
 enum ParseArgs {SW_NONE, SW_LISTENPORT, SW_SENDPORT, SW_TRACKERHOST, SW_TRACKERPORT, SW_ALIAS, SW_HOSTNAME};
@@ -178,56 +168,6 @@ void parse_args(int argc, char **argv) {
             StringAssign(&GHostname, arg);
         state = SW_NONE;
     }
-}
-
-enum ExecState {EXEC_START, EXEC_SEND, EXEC_SENDALIAS};
-int execute_command(Arena scratch, char *cmd) {
-    Array tokens = tokenize_command(&scratch, cmd);
-
-//    printf("execute_command() tokens (%d):\n", tokens.len);
-//    for (int i=0; i < tokens.len; i++) {
-//        String *tok = ArrayItem(tokens, i);
-//        printf("[%d] %s\n", i, CSTR(*tok));
-//    }
-
-    if (tokens.len == 0)
-        return 0;
-
-    String sendalias;
-    String chattext = StringNew0(&scratch);
-
-    enum ExecState state = EXEC_START;
-    for (int i=0; i < tokens.len; i++) {
-        String *ptoken = ArrayItem(tokens, i);
-        String token = *ptoken;
-
-        if (state == EXEC_START) {
-            if (StringEquals(token, "quit") || StringEquals(token, "bye")) {
-                return 1;
-            } else if (StringEquals(token, "knock")) {
-                return 0;
-            } else if (StringEquals(token, "peers")) {
-                print_peers(GPeers);
-                return 0;
-            } else if (StringEquals(token, "chats")) {
-                return 0;
-            } else if (StringEquals(token, "send")) {
-                state = EXEC_SEND;
-            }
-        } else if (state == EXEC_SEND) {
-            sendalias = token;
-            state = EXEC_SENDALIAS;
-        } else if (state == EXEC_SENDALIAS) {
-            array_join_strings(tokens, i, tokens.len-1, &chattext);
-            if (chattext.len == 0)
-                return 0;
-
-            //todo: send chattext to sendalias
-            return 0;
-        }
-    }
-
-    return 0;
 }
 
 enum TokenizeState {TOKENIZE_START, TOKENIZE_SPACE, TOKENIZE_CHAR, TOKENIZE_EOF};
@@ -288,6 +228,56 @@ void array_join_strings(Array strs, int istart, int iend, String *outstr) {
         if (i < iend)
             StringAppend(outstr, " ");
     }
+}
+
+enum ExecState {EXEC_START, EXEC_SEND, EXEC_SENDALIAS};
+int execute_command(Arena scratch, char *cmd) {
+    Array tokens = tokenize_command(&scratch, cmd);
+
+//    printf("execute_command() tokens (%d):\n", tokens.len);
+//    for (int i=0; i < tokens.len; i++) {
+//        String *tok = ArrayItem(tokens, i);
+//        printf("[%d] %s\n", i, CSTR(*tok));
+//    }
+
+    if (tokens.len == 0)
+        return 0;
+
+    String sendalias;
+    String chattext = StringNew0(&scratch);
+
+    enum ExecState state = EXEC_START;
+    for (int i=0; i < tokens.len; i++) {
+        String *ptoken = ArrayItem(tokens, i);
+        String token = *ptoken;
+
+        if (state == EXEC_START) {
+            if (StringEquals(token, "quit") || StringEquals(token, "bye")) {
+                return 1;
+            } else if (StringEquals(token, "knock")) {
+                return 0;
+            } else if (StringEquals(token, "peers")) {
+                print_peers(GPeers);
+                return 0;
+            } else if (StringEquals(token, "chats")) {
+                return 0;
+            } else if (StringEquals(token, "send")) {
+                state = EXEC_SEND;
+            }
+        } else if (state == EXEC_SEND) {
+            sendalias = token;
+            state = EXEC_SENDALIAS;
+        } else if (state == EXEC_SENDALIAS) {
+            array_join_strings(tokens, i, tokens.len-1, &chattext);
+            if (chattext.len == 0)
+                return 0;
+
+            //todo: send chattext to sendalias
+            return 0;
+        }
+    }
+
+    return 0;
 }
 
 void* THREAD_wait_for_tcp_messages(void *data) {
@@ -478,7 +468,7 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
         HostAddr peer_toaddr;
         NetUnpack(msgbytes, msglen, "%b%s%s%L%L", &msgno, &alias, &hostname, &peer_fromaddr, &peer_toaddr);
 
-        printf("** PEER_ONLINE alias: %s' hostname: '%s' fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)), HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
+        printf("** PEER_ONLINE %s/%s fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)), HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
 
         Peer_add_or_replace2(&GPeers, alias, hostname, peer_fromaddr, peer_toaddr);
         print_peers(GPeers);
@@ -494,6 +484,30 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 
         Peer_remove(&GPeers, peer_fromaddr);
         print_peers(GPeers);
+    } else if (msgno == CHATTEXT) {
+        String text = StringNew0(&scratch);
+        NetUnpack(msgbytes, msglen, "%b%s", &msgno, &text);
+
+        Peer *peer = Peer_find_fromaddr(GPeers, fromaddr);
+        if (peer)
+            printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", CSTR(peer->alias), CSTR(peer->hostname), CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
+        else
+            printf("** CHATTEXT from unknown text: %s fromaddr: %s/%d **\n", CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
     }
+}
+
+int SendMsgV(int destfd, int bufsize, struct timeval *timeout, char *fmt, va_list args) {
+    char buf[bufsize];
+    Buffer sendbuf = BUFFER(buf, bufsize);
+    NetPackLenV(&sendbuf, fmt, args);
+
+    return NetSend_wait_until_complete(destfd, &sendbuf, timeout);
+}
+int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int z = SendMsgV(destfd, bufsize, timeout, fmt, args);
+    va_end(args);
+    return z;
 }
 

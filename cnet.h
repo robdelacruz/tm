@@ -11,6 +11,8 @@
 
 #include "clib.h"
 
+typedef struct sockaddr_in SockAddrIPV4;
+
 // HostAddr combines IPv4 address (sin_addr 32 bits) + network port (sin_port 16 bits)
 // hostaddr = (sin_port << 32) + sin_addr
 typedef u64 HostAddr;
@@ -33,16 +35,22 @@ int getsockopt0(int sockfd, int level, int optname, void *optval, socklen_t *opt
 int setsockopt0(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
 int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 
-int GetIPV4Address(char *host, int port, struct sockaddr_in *sa);
+int GetIPV4Address(char *host, int port, SockAddrIPV4 *sa);
 int OpenTcpSocket(char *host, int port);
-int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *timeout);
+int OpenTcpConnectSocket(int bindport, struct sockaddr *sa, socklen_t sa_len, struct timeval *timeout);
+int OpenTcpConnectSocket2(int bindport, HostAddr hostaddr, struct timeval *timeout);
+int OpenTcpConnectSocket3(int bindport, char *host, int port, struct timeval *timeout);
 void ShutdownSocket(int fd);
+
 int NetRecv(int fd, Buffer *buf);
 int NetSend(int fd, Buffer *buf);
 int NetSend2(int fd, Buffer *buf, fd_set *writefds, int *maxfd);
+int NetSend_wait_until_complete(int fd, Buffer *sendbuf, struct timeval *timeout);
+
+int NetPackV(Buffer *buf, char *fmt, va_list args);
 int NetPack(Buffer *buf, char *fmt, ...);
+int NetPackLenV(Buffer *buf, char *fmt, va_list args);
 int NetPackLen(Buffer *buf, char *fmt, ...);
 void NetUnpack(char *bs, int bslen, char *fmt, ...);
-int NetSend_wait_until_complete(int fd, Buffer *sendbuf, struct timeval *timeout);
 
 #endif

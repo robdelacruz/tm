@@ -144,6 +144,7 @@ void StringAppend(String *str, char *s) {
     if (str->len + slen + 1 > USHRT_MAX) // Check for str.len overflow
         return;
 
+    assert(str->arena != NULL);
     str->bs = (char *) ArenaRealloc(str->arena, str->bs, str->len, str->len+slen+1);
     memcpy(str->bs + str->len, s, slen);
     str->len += slen;
@@ -285,6 +286,7 @@ void BufferAppend(Buffer *buf, char *bs, u32 bslen) {
     while (bslen > newcap - buf->len)
         newcap *= 2;
     if (newcap > buf->cap) {
+        assert(buf->arena != NULL);
         buf->bs = (char *) ArenaRealloc(buf->arena, buf->bs, buf->cap, newcap);
         buf->cap = newcap;
     }

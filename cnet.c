@@ -112,7 +112,7 @@ int connect0(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     return z;
 }
 
-int GetIPV4Address(char *host, int port, struct sockaddr_in *sa) {
+int GetIPV4Address(char *host, int port, SockAddrIPV4 *sa) {
     char portstr[10];
     snprintf(portstr, sizeof(portstr), "%d", port);
 
@@ -129,8 +129,8 @@ int GetIPV4Address(char *host, int port, struct sockaddr_in *sa) {
     }
 
     assert(ai->ai_family == AF_INET);
-    assert(ai->ai_addrlen == sizeof(struct sockaddr_in));
-    memcpy(sa, ai->ai_addr, sizeof(struct sockaddr_in));
+    assert(ai->ai_addrlen == sizeof(SockAddrIPV4));
+    memcpy(sa, ai->ai_addr, sizeof(SockAddrIPV4));
 
     freeaddrinfo(ai);
     return 0;
@@ -162,7 +162,7 @@ int OpenTcpSocket(char *host, int port) {
     return fd;
 }
 
-int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *timeout) {
+int OpenTcpConnectSocket(int bindport, struct sockaddr *sa, socklen_t sa_len, struct timeval *timeout) {
     int z;
 
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -177,25 +177,22 @@ int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *tim
         return -1;
     }
 
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(bindport);
-    sa.sin_addr.s_addr = INADDR_ANY;
-    z = bind(fd, (struct sockaddr *) &sa, sizeof(sa));
+    struct sockaddr_in bindsa;
+    memset(&bindsa, 0, sizeof(bindsa));
+    bindsa.sin_family = AF_INET;
+    bindsa.sin_port = htons(bindport);
+    bindsa.sin_addr.s_addr = INADDR_ANY;
+    z = bind(fd, (struct sockaddr *) &bindsa, sizeof(bindsa));
     if (z == -1) {
         fprintf(stderr, "OpenTcpConnect() bind(): %s\n", strerror(errno));
         return -1;
     }
 
-    struct sockaddr_in sa_connect;
-    if (GetIPV4Address(host, port, &sa_connect) == -1)
-        return -1;
-    z = connect(fd, (struct sockaddr *) &sa_connect, sizeof(sa_connect));
+    z = connect(fd, sa, sa_len);
     if (z == 0)
         goto connected;
     if (z == -1 && errno != EINPROGRESS) {
-        fprintf(stderr, "nonblocking connect() %s/%d: %s\n", host, port, strerror(errno));
+        fprintf(stderr, "nonblocking connect(): %s\n", strerror(errno));
         ShutdownSocket(fd);
         return -1;
     }
@@ -207,7 +204,7 @@ int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *tim
         while (1) {
             int zz = select(fd+1, NULL, &writefds, NULL, timeout);
             if (zz == 0) {
-                fprintf(stderr, "nonblocking connect() timeout %s/%d\n", host, port);
+                fprintf(stderr, "nonblocking connect() timeout\n");
                 ShutdownSocket(fd);
                 return -1;
             }
@@ -240,6 +237,16 @@ int OpenTcpConnectSocket(int bindport, char *host, int port, struct timeval *tim
 
 connected:
     return fd;
+}
+int OpenTcpConnectSocket2(int bindport, HostAddr hostaddr, struct timeval *timeout) {
+    SockAddrIPV4 sa = SockAddrFromHostAddr(hostaddr);
+    return OpenTcpConnectSocket(bindport, (struct sockaddr *) &sa, sizeof(sa), timeout);
+}
+int OpenTcpConnectSocket3(int bindport, char *host, int port, struct timeval *timeout) {
+    SockAddrIPV4 sa;
+    if (GetIPV4Address(host, port, &sa) == -1)
+        return -1;
+    return OpenTcpConnectSocket(bindport, (struct sockaddr *) &sa, sizeof(sa), timeout);
 }
 
 void ShutdownSocket(int fd) {
@@ -307,6 +314,40 @@ int NetSend2(int fd, Buffer *buf, fd_set *writefds, int *maxfd) {
             *maxfd = fd;
     }
     return z;
+}
+
+int NetSend_wait_until_complete(int fd, Buffer *sendbuf, struct timeval *timeout) {
+    int z = NetSend(fd, sendbuf);
+    if (z == -1)
+        return -1;
+    if (z == 0)
+        return 0;
+
+    fd_set writefds;
+    FD_ZERO(&writefds);
+    FD_SET(fd, &writefds);
+
+    while (1) {
+        z = select(fd+1, NULL, &writefds, NULL, timeout);
+        if (z == 0) {
+            fprintf(stderr, "NetSend_wait_until_complete timeout\n");
+            return -1;
+        }
+        if (z == -1 && errno == EINTR)
+            continue;
+        if (z == -1) {
+            fprintf(stderr, "NetSend_wait_until_complete select(): %s\n", strerror(errno));
+            return -1;
+        }
+        if (FD_ISSET(fd, &writefds)) {
+            z = NetSend(fd, sendbuf);
+            if (z == -1)
+                return -1;
+            if (z == 0)
+                break;
+        }
+    }
+    return 0;
 }
 
 int NetPackV(Buffer *buf, char *fmt, va_list args) {
@@ -382,14 +423,10 @@ int NetPack(Buffer *buf, char *fmt, ...) {
     return nbytes_packed;
 }
 
-// Like NetPack() but prefixes the block length (u16) at the start of the block.
-int NetPackLen(Buffer *buf, char *fmt, ...) {
+int NetPackLenV(Buffer *buf, char *fmt, va_list args) {
     // Add 0 block length first, this will be overwritten later.
     u16 msglen = 0;
     BufferAppend(buf, (char *) &msglen, sizeof(msglen));
-
-    va_list args;
-    va_start(args, fmt);
 
     // Add the body
     msglen = NetPackV(buf, fmt, args);
@@ -398,9 +435,18 @@ int NetPackLen(Buffer *buf, char *fmt, ...) {
     u16 *pmsglen = (u16 *) (buf->bs + buf->len - msglen - sizeof(msglen));
     *pmsglen = htons(msglen);
 
-    va_end(args);
-
     return msglen + sizeof(msglen);
+}
+
+// Like NetPack() but prefixes the block length (u16) at the start of the block.
+int NetPackLen(Buffer *buf, char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    int len = NetPackLenV(buf, fmt, args);
+
+    va_end(args);
+    return len;
 }
 
 // NetUnpack(buf, "BUF %b %w %l %s", &n1, &n2, &n3, s1);
@@ -494,36 +540,3 @@ void NetUnpack(char *bs, int bslen, char *fmt, ...) {
     va_end(args);
 }
 
-int NetSend_wait_until_complete(int fd, Buffer *sendbuf, struct timeval *timeout) {
-    int z = NetSend(fd, sendbuf);
-    if (z == -1)
-        return -1;
-    if (z == 0)
-        return 0;
-
-    fd_set writefds;
-    FD_ZERO(&writefds);
-    FD_SET(fd, &writefds);
-
-    while (1) {
-        z = select(fd+1, NULL, &writefds, NULL, timeout);
-        if (z == 0) {
-            fprintf(stderr, "NetSend_wait_until_complete timeout\n");
-            return -1;
-        }
-        if (z == -1 && errno == EINTR)
-            continue;
-        if (z == -1) {
-            fprintf(stderr, "NetSend_wait_until_complete select(): %s\n", strerror(errno));
-            return -1;
-        }
-        if (FD_ISSET(fd, &writefds)) {
-            z = NetSend(fd, sendbuf);
-            if (z == -1)
-                return -1;
-            if (z == 0)
-                break;
-        }
-    }
-    return 0;
-}

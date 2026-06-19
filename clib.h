@@ -11,6 +11,10 @@
 #define CSTRP(strp) (strp->bs? strp->bs : "")
 #define CSTR_EQUALS(s1, s2) (strcmp(s1, s2) == 0)
 
+// Create a fixed len size Buffer.
+// Same as regular Buffer, except you can't call BufferAppend() on it.
+#define BUFFER(bs, size) ((Buffer) {NULL, bs, 0, size})
+
 typedef char i8;
 typedef short i16;
 typedef long i32;

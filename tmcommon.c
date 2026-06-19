@@ -93,6 +93,15 @@ void Peer_remove(Array *peers, HostAddr fromaddr) {
     }
 }
 
+Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr) {
+    for (int i=0; i < peers.len; i++) {
+        Peer *p = ArrayItem(peers, i);
+        if (p->fromaddr == fromaddr)
+            return p;
+    }
+    return NULL;
+}
+
 void print_peers(Array peers) {
     char *fromaddr_str, *toaddr_str;
 
