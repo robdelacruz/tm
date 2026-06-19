@@ -191,3 +191,16 @@ void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, A
     }
 }
 
+void print_chattexts(Array chattexts) {
+    if (chattexts.len == 0) {
+        printf("Chat Texts (0)\n");
+        return;
+    }
+
+    printf("Chat Texts (%d):\n", chattexts.len);
+    for (int i=0; i < chattexts.len; i++) {
+        ChatText *p = ArrayItem(chattexts, i);
+        printf("[%d] From %s/%s: %s\n", i+1, CSTR(p->alias), CSTR(p->hostname), CSTR(p->text));
+    }
+}
+

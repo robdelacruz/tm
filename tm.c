@@ -43,6 +43,7 @@ String GAlias;
 String GHostname;
 
 Array GPeers;
+Array GChatTexts;
 int GTrackerFD=0;
 HostAddr GTrackerAddr=0;
 
@@ -82,6 +83,7 @@ int main(int argc, char *argv[]) {
     GTrackerAddr = HostAddrFromSockAddr(&tracker_sa);
 
     GPeers = ArrayNew(&arena, 64, sizeof(Peer));
+    GChatTexts = ArrayNew(&arena, 64, sizeof(ChatText));
 
     struct timeval timeout = {2, 0};
     GTrackerFD = OpenTcpConnectSocket3(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
@@ -254,6 +256,7 @@ int execute_command(Arena scratch, char *cmd) {
                 print_peers(GPeers);
                 return 0;
             } else if (StringEquals(token, "chats")) {
+                print_chattexts(GChatTexts);
                 return 0;
             } else if (StringEquals(token, "send")) {
                 state = EXEC_SEND;
@@ -500,10 +503,19 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
         NetUnpack(msgbytes, msglen, "%b%s", &msgno, &text);
 
         Peer *peer = Peer_find_fromaddr(GPeers, fromaddr);
-        if (peer)
-            printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", CSTR(peer->alias), CSTR(peer->hostname), CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
-        else
+        if (peer == NULL) {
             printf("** CHATTEXT from unknown text: %s fromaddr: %s/%d **\n", CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
+            return;
+        }
+        printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", CSTR(peer->alias), CSTR(peer->hostname), CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
+
+        ChatText ct;
+        ct.timestamp = time(NULL);
+        ct.alias = StringDup(GChatTexts.arena, peer->alias);
+        ct.hostname = StringDup(GChatTexts.arena, peer->hostname);
+        ct.fromaddr = peer->fromaddr;
+        ct.text = StringDup(GChatTexts.arena, text);
+        ArrayAppend(&GChatTexts, &ct);
     }
 }
 
