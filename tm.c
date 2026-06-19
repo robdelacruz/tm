@@ -51,7 +51,7 @@ int GUnblockSelect_writefd=0;
 int main(int argc, char *argv[]) {
     int z;
     Arena arena = ArenaNew(64*1024);
-    Arena scratch = ArenaNew(1024);
+    Arena scratch = ArenaNew(4*1024);
 
     signal(SIGINT, sigint);
 
@@ -234,12 +234,6 @@ enum ExecState {EXEC_START, EXEC_SEND, EXEC_SENDALIAS};
 int execute_command(Arena scratch, char *cmd) {
     Array tokens = tokenize_command(&scratch, cmd);
 
-//    printf("execute_command() tokens (%d):\n", tokens.len);
-//    for (int i=0; i < tokens.len; i++) {
-//        String *tok = ArrayItem(tokens, i);
-//        printf("[%d] %s\n", i, CSTR(*tok));
-//    }
-
     if (tokens.len == 0)
         return 0;
 
@@ -272,7 +266,24 @@ int execute_command(Arena scratch, char *cmd) {
             if (chattext.len == 0)
                 return 0;
 
-            //todo: send chattext to sendalias
+            // Send chattext to sendalias
+            Peer *p = Peer_find_alias(GPeers, CSTR(sendalias));
+            if (p == NULL) {
+                printf("Alias %s is not online.\n", CSTR(sendalias));
+                return 0;
+            }
+            struct timeval timeout = {2,0};
+            int peerfd = OpenTcpConnectSocket2(GSendPort, p->toaddr, &timeout);
+            if (peerfd == -1) {
+                printf("Can't connect to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(p->toaddr), ntohs(HostAddr_port(p->toaddr)));
+                return 0;
+            }
+            Buffer sendbuf = BufferNew(&scratch, 255);
+            NetPackLen(&sendbuf, "%b%s", CHATTEXT, CSTR(chattext));
+            if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
+                printf("Error sending to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(p->toaddr), ntohs(HostAddr_port(p->toaddr)));
+
+            ShutdownSocket(peerfd);
             return 0;
         }
     }

@@ -54,7 +54,7 @@ typedef struct {
 } SocketCtx;
 
 typedef struct {
-    time_t dt;
+    time_t timestamp;
     String alias;
     String hostname;
     HostAddr fromaddr;
@@ -71,6 +71,7 @@ void Peer_add_or_replace(Array *peers, Peer *peer);
 void Peer_add_or_replace2(Array *peers, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
 void Peer_remove(Array *peers, HostAddr fromaddr);
 Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr);
+Peer *Peer_find_alias(Array peers, char *alias);
 void print_peers(Array peers);
 
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);

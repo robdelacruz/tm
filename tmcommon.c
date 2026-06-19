@@ -102,6 +102,15 @@ Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr) {
     return NULL;
 }
 
+Peer *Peer_find_alias(Array peers, char *alias) {
+    for (int i=0; i < peers.len; i++) {
+        Peer *p = ArrayItem(peers, i);
+        if (StringEquals(p->alias, alias))
+            return p;
+    }
+    return NULL;
+}
+
 void print_peers(Array peers) {
     char *fromaddr_str, *toaddr_str;
 
