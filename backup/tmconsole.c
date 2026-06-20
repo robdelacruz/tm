@@ -17,7 +17,6 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
-#include <gtk/gtk.h>
 #include "clib.h"
 #include "cnet.h"
 #include "tmcommon.h"
@@ -30,8 +29,6 @@
 void sigint(int sig);
 void parse_args(int argc, char **argv);
 int execute_command(Arena scratch, char *cmd);
-void run_shell(Arena scratch);
-void start_ui();
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -57,7 +54,6 @@ int main(int argc, char *argv[]) {
     Arena arena = ArenaNew(64*1024);
     Arena scratch = ArenaNew(4*1024);
 
-    gtk_init(&argc, &argv);
     signal(SIGINT, sigint);
 
     if (getlogin() != NULL)
@@ -105,7 +101,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    start_ui();
+    while (1) {
+        char inputbuf[64];
+
+        printf("> ");
+        fgets(inputbuf, sizeof(inputbuf), stdin);
+        inputbuf[strlen(inputbuf)-1] = 0; // remove trailing \n
+        if (execute_command(scratch, inputbuf) == 1)
+            break;
+    }
 
     // Break out of select() loop in THREAD_wait_for_tcp_messages().
     char writebuf[] = "1";
@@ -121,18 +125,6 @@ int main(int argc, char *argv[]) {
 
     printf("Bye.\n");
     return 0;
-}
-
-void run_shell(Arena scratch) {
-    while (1) {
-        char inputbuf[64];
-
-        printf("> ");
-        fgets(inputbuf, sizeof(inputbuf), stdin);
-        inputbuf[strlen(inputbuf)-1] = 0; // remove trailing \n
-        if (execute_command(scratch, inputbuf) == 1)
-            break;
-    }
 }
 
 void sigint(int sig) {
@@ -540,16 +532,5 @@ int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...) {
     int z = SendMsgV(destfd, bufsize, timeout, fmt, args);
     va_end(args);
     return z;
-}
-
-void start_ui() {
-    GtkWidget *mainwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_default_size(GTK_WINDOW(mainwin), 275,425);
-    gtk_window_set_position(GTK_WINDOW(mainwin), GTK_WIN_POS_CENTER);
-    gtk_window_set_title(GTK_WINDOW(mainwin), "TinyMsg");
-    g_signal_connect(mainwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-
-    gtk_widget_show_all(mainwin);
-    gtk_main();
 }
 

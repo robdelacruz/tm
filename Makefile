@@ -13,8 +13,8 @@ t2: t2.c clib.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS)
 
 tm: tm.c clib.c cnet.c tmcommon.c
-#	gcc $(CFLAGS) $(GTK_CFLAGS) -o $@ $^ $(LIBS) $(GTK_LIBS)
-	gcc $(CFLAGS) -o $@ $^ $(LIBS) 
+	gcc $(CFLAGS) $(GTK_CFLAGS) -o $@ $^ $(LIBS) $(GTK_LIBS)
+#	gcc $(CFLAGS) -o $@ $^ $(LIBS) 
 
 tmtracker: tmtracker.c clib.c cnet.c tmcommon.c
 #	gcc $(CFLAGS) $(GTK_CFLAGS) -o $@ $^ $(LIBS) $(GTK_LIBS)
