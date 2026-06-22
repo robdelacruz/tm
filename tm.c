@@ -21,6 +21,7 @@
 #include "clib.h"
 #include "cnet.h"
 #include "tmcommon.h"
+#include "uicommon.h"
 
 #define TRACKER_HOST "127.0.0.1"
 #define TRACKER_PORT 9000
@@ -37,6 +38,9 @@ void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
+
+void CB_mainwin_destroy(GtkWidget *w, gpointer data);
+static gboolean IDLE_UpdatePeersListBox(gpointer data);
 
 typedef struct {
     GtkWidget *peerslistbox;
@@ -104,6 +108,7 @@ int main(int argc, char *argv[]) {
 
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
+    //GThread *thread_wait_tcp = g_thread_new("wait_for_tcp_messages", THREAD_wait_for_tcp_messages, NULL);
 
     z = SendMsg(GTrackerFD, 128, &timeout, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
     if (z == -1) {
@@ -125,6 +130,7 @@ int main(int argc, char *argv[]) {
     ShutdownSocket(GTrackerFD);
 
     pthread_join(thread_wait_tcp, NULL);
+    //g_thread_join(thread_wait_tcp);
 
     printf("Bye.\n");
     return 0;
@@ -499,7 +505,17 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 
         printf("** PEER_ONLINE %s/%s fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)), HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
 
-        Peer_add_or_replace2(&GPeers, alias, hostname, peer_fromaddr, peer_toaddr);
+        int ipeer = Peer_find_fromaddr2(GPeers, peer_fromaddr);
+        if (ipeer == -1) {
+            Peer newpeer = Peer_new(GPeers.arena, alias, hostname, peer_fromaddr, peer_toaddr);
+            ArrayAppend(&GPeers, &newpeer);
+            int inewpeer = GPeers.len-1;
+            g_idle_add(IDLE_UpdatePeersListBox, GINT_TO_POINTER(inewpeer));
+        } else {
+            Peer *editpeer = ArrayItem(GPeers, ipeer);
+            Peer_replace(editpeer, alias, hostname, peer_fromaddr, peer_toaddr);
+            g_idle_add(IDLE_UpdatePeersListBox, GINT_TO_POINTER(ipeer));
+        }
         print_peers(GPeers);
     } else if (msgno == PEER_OFFLINE) {
         // Should only come from tracker
@@ -511,7 +527,11 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 
         printf("** PEER_OFFLINE fromaddr: %s/%d **\n", HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)));
 
-        Peer_remove(&GPeers, peer_fromaddr);
+        int ipeer = Peer_find_fromaddr2(GPeers, peer_fromaddr);
+        if (ipeer != -1) {
+            ArrayRemove(&GPeers, ipeer);
+            GtkListBox_remove(GUI.peerslistbox, ipeer);
+        }
         print_peers(GPeers);
     } else if (msgno == CHATTEXT) {
         String text = StringNew0(&scratch);
@@ -583,4 +603,22 @@ void create_ui(Arena scratch) {
 
     gtk_widget_show_all(mainwin);
 }
+
+void CB_mainwin_destroy(GtkWidget *w, gpointer data) {
+    gtk_main_quit();
+}
+
+static gboolean IDLE_UpdatePeersListBox(gpointer data) {
+    int ipeer = GPOINTER_TO_INT(data);
+    Peer *peer = ArrayItem(GPeers, ipeer);
+    if (ipeer > GtkListBox_numrows(GUI.peerslistbox)-1) {
+        GtkListBox_append(GUI.peerslistbox, CSTR(peer->alias));
+    } else {
+        GtkListBox_replace(GUI.peerslistbox, ipeer, CSTR(peer->alias));
+    }
+    gtk_widget_show_all(GUI.peerslistbox);
+
+    return G_SOURCE_REMOVE;
+}
+
 

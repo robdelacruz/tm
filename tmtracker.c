@@ -232,14 +232,18 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
             send_msg_to_hostaddr(scratch, sendbuf.bs, sendbuf.len, toaddr, socketctxs, writefds, maxfd);
         }
 
-        Peer_add_or_replace2(&GPeers, alias, hostname, fromaddr, toaddr);
+        Peer newpeer = Peer_new(GPeers.arena, alias, hostname, fromaddr, toaddr);
+        int ipeer = Peer_find_fromaddr2(GPeers, fromaddr);
+        if (ipeer == -1)
+            ArrayAppend(&GPeers, &newpeer);
+        else
+            ArrayReplace(&GPeers, ipeer, &newpeer);
         print_peers(GPeers);
     } else if (msgno == BYE) {
         printf("** BYE ** received from %s/%d **\n", HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
-        if (!Peer_exists(GPeers, fromaddr))
-            return;
-
-        Peer_remove(&GPeers, fromaddr);
+        int ipeer = Peer_find_fromaddr2(GPeers, fromaddr);
+        if (ipeer != -1)
+            ArrayRemove(&GPeers, ipeer);
         print_peers(GPeers);
 
         // Inform all peers that this peer is going offline.

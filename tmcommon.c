@@ -52,48 +52,23 @@ int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr) {
     return -1;
 }
 
-int Peer_exists(Array peers, HostAddr fromaddr) {
-    for (int i=0; i < peers.len; i++) {
-        Peer *p = ArrayItem(peers, i);
-        if (p->fromaddr == fromaddr)
-            return 1;
-    }
-    return 0;
-}
-
-void Peer_add_or_replace(Array *peers, Peer *peer) {
-    // Replace if a peer with the same hostaddr exists
-    for (int i=0; i < peers->len; i++) {
-        Peer *p = ArrayItem(*peers, i);
-        if (p->toaddr == peer->toaddr) {
-            ArrayReplace(peers, i, peer);
-            GtkListBox_replace(GUI.peerslistbox, i, CSTR(p->alias));
-            return;
-        }
-    }
-    ArrayAppend(peers, peer);
-    GtkListBox_append(GUI.peerslistbox, CSTR(p->alias));
-}
-
-void Peer_add_or_replace2(Array *peers, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr) {
+Peer Peer_new(Arena *arena, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr) {
     Peer peer;
-    peer.alias = StringDup(peers->arena, alias);
-    peer.hostname = StringDup(peers->arena, hostname);
+    peer.alias = StringDup(arena, alias);
+    peer.hostname = StringDup(arena, hostname);
     peer.fromaddr = fromaddr;
     peer.toaddr = toaddr;
 
-    Peer_add_or_replace(peers, &peer);
+    return peer;
 }
 
-void Peer_remove(Array *peers, HostAddr fromaddr) {
-    for (int i=0; i < peers->len; i++) {
-        Peer *p = ArrayItem(*peers, i);
-        if (p->fromaddr == fromaddr) {
-            ArrayRemove(peers, i);
-            GtkListBox_remove(GUI.peerslistbox, i);
-            return;
-        }
-    }
+void Peer_replace(Peer *peer, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr) {
+    if (!StringEquals(peer->alias, CSTR(alias)))
+        StringAssign(&peer->alias, CSTR(alias));
+    if (!StringEquals(peer->hostname, CSTR(hostname)))
+        StringAssign(&peer->hostname, CSTR(hostname));
+    peer->fromaddr = fromaddr;
+    peer->toaddr = toaddr;
 }
 
 Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr) {
@@ -103,6 +78,15 @@ Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr) {
             return p;
     }
     return NULL;
+}
+
+int Peer_find_fromaddr2(Array peers, HostAddr fromaddr) {
+    for (int i=0; i < peers.len; i++) {
+        Peer *p = ArrayItem(peers, i);
+        if (p->fromaddr == fromaddr)
+            return i;
+    }
+    return -1;
 }
 
 Peer *Peer_find_alias(Array peers, char *alias) {
@@ -205,39 +189,5 @@ void print_chattexts(Array chattexts) {
         ChatText *p = ArrayItem(chattexts, i);
         printf("[%d] From %s/%s: %s\n", i+1, CSTR(p->alias), CSTR(p->hostname), CSTR(p->text));
     }
-}
-
-GtkWidget *create_label(char *caption) {
-    GtkWidget *lbl = gtk_label_new(caption);
-    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
-    gtk_widget_set_valign(lbl, GTK_ALIGN_END);
-    return lbl;
-}
-
-int GtkListBox_numrows(GtkWidget *lb) {
-    for (int i=0; ; i++) {
-        GtkListBoxRow *row = gtk_list_box_get_row_at_index(GTK_LIST_BOX(lb), i);
-        if (row == NULL)
-            return i;
-    }
-    assert(FALSE);
-    return 0;
-}
-void GtkListBox_append(GtkWidget *lb, char *text) {
-    GtkWidget *lbl = create_label(text);
-    gtk_container_add(GTK_CONTAINER(lb), lbl);
-}
-void GtkListBox_replace(GtkWidget *lb, int index, char *text) {
-    GtkWidget *row = (GtkWidget *) gtk_list_box_get_row_at_index(GTK_LIST_BOX(lb), index);
-    if (row == NULL)
-        return;
-    gtk_container_remove(GTK_CONTAINER(lb), row);
-    GtkWidget *lbl = create_label(text);
-    gtk_list_box_insert(GTK_LIST_BOX(lb), lbl, index);
-}
-void GtkListBox_remove(GtkListBox *lb, int index) {
-    GtkWidget *row = (GtkWidget *) gtk_list_box_get_row_at_index(GTK_LIST_BOX(lb), index);
-    if (row)
-        gtk_container_remove(GTK_CONTAINER(lb), row);
 }
 

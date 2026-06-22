@@ -1,4 +1,3 @@
-#include <gtk/gtk.h>
 #include "clib.h"
 #include "cnet.h"
 
@@ -67,11 +66,10 @@ int SocketCtx_find_by_fd2(Array ctxs, int fd);
 SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr);
 int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr);
 
-int Peer_exists(Array peers, HostAddr fromaddr);
-void Peer_add_or_replace(Array *peers, Peer *peer);
-void Peer_add_or_replace2(Array *peers, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
-void Peer_remove(Array *peers, HostAddr fromaddr);
+Peer Peer_new(Arena *arena, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
+void Peer_replace(Peer *peer, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
 Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr);
+int Peer_find_fromaddr2(Array peers, HostAddr fromaddr);
 Peer *Peer_find_alias(Array peers, char *alias);
 void print_peers(Array peers);
 
@@ -79,10 +77,4 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr des
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 void print_chattexts(Array chattexts);
-
-GtkWidget *create_label(char *caption);
-int GtkListBox_numrows(GtkWidget *lb);
-void GtkListBox_append(GtkWidget *lbl, char *text);
-void GtkListBox_replace(GtkWidget *lb, int index, char *text);
-void GtkListBox_remove(GtkListBox *lb, int index);
 
