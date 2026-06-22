@@ -31,12 +31,16 @@ void sigint(int sig);
 void parse_args(int argc, char **argv);
 int execute_command(Arena scratch, char *cmd);
 void run_shell(Arena scratch);
-void start_ui();
+void create_ui(Arena scratch);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
+
+typedef struct {
+    GtkWidget *peerslistbox;
+} TMUI;
 
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
@@ -51,6 +55,8 @@ int GTrackerFD=0;
 HostAddr GTrackerAddr=0;
 
 int GUnblockSelect_writefd=0;
+
+TMUI GUI = {0};
 
 int main(int argc, char *argv[]) {
     int z;
@@ -105,7 +111,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    start_ui();
+    create_ui(scratch);
+    gtk_main();
 
     // Break out of select() loop in THREAD_wait_for_tcp_messages().
     char writebuf[] = "1";
@@ -542,14 +549,38 @@ int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...) {
     return z;
 }
 
-void start_ui() {
+void create_ui(Arena scratch) {
     GtkWidget *mainwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(mainwin), 275,425);
     gtk_window_set_position(GTK_WINDOW(mainwin), GTK_WIN_POS_CENTER);
     gtk_window_set_title(GTK_WINDOW(mainwin), "TinyMsg");
+
+    // Menubar
+    GtkWidget *menubar = gtk_menu_bar_new();
+    GtkWidget *tmmenu = gtk_menu_new();
+    GtkWidget *tmmi = gtk_menu_item_new_with_mnemonic("_TinyMsg");
+    GtkWidget *settingsmi = gtk_menu_item_new_with_mnemonic("_Settings");
+    GtkWidget *quitmi = gtk_menu_item_new_with_mnemonic("_Quit");
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(tmmi), tmmenu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(tmmenu), settingsmi);
+    gtk_menu_shell_append(GTK_MENU_SHELL(tmmenu), quitmi);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menubar), tmmi);
+
+    GtkWidget *aliaslbl = create_label(CSTR(GAlias));
+    GtkWidget *peerslistbox = gtk_list_box_new();
+    GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(contentbox), aliaslbl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(contentbox), peerslistbox, TRUE, TRUE, 0);
+
+    GtkWidget *framebox = gtk_vbox_new(FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(framebox), menubar, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(framebox), contentbox, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(mainwin), framebox);
+
     g_signal_connect(mainwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
+    GUI.peerslistbox = peerslistbox;
+
     gtk_widget_show_all(mainwin);
-    gtk_main();
 }
 

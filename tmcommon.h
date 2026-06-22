@@ -1,3 +1,4 @@
+#include <gtk/gtk.h>
 #include "clib.h"
 #include "cnet.h"
 
@@ -78,4 +79,10 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr des
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 void print_chattexts(Array chattexts);
+
+GtkWidget *create_label(char *caption);
+int GtkListBox_numrows(GtkWidget *lb);
+void GtkListBox_append(GtkWidget *lbl, char *text);
+void GtkListBox_replace(GtkWidget *lb, int index, char *text);
+void GtkListBox_remove(GtkListBox *lb, int index);
 
