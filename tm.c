@@ -586,11 +586,18 @@ void create_ui(Arena scratch) {
     gtk_menu_shell_append(GTK_MENU_SHELL(tmmenu), quitmi);
     gtk_menu_shell_append(GTK_MENU_SHELL(menubar), tmmi);
 
-    GtkWidget *aliaslbl = create_label(CSTR(GAlias));
+    String s = StringFormat(&scratch, "<span foreground=\"gray\" weight=\"bold\">%s/%s</span>", CSTR(GAlias), CSTR(GHostname));
+    GtkWidget *aliaslbl = create_markup_label2(CSTR(s));
+    set_widget_margins(aliaslbl, 0,0,10,15);
+    GtkWidget *peersframe = gtk_frame_new("Peers");
     GtkWidget *peerslistbox = gtk_list_box_new();
+    set_widget_margins(peerslistbox, 5,5,2,0);
+    gtk_container_add(GTK_CONTAINER(peersframe), peerslistbox);
+
     GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
+    set_widget_margins(contentbox, 10,10,0,0);
     gtk_box_pack_start(GTK_BOX(contentbox), aliaslbl, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(contentbox), peerslistbox, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(contentbox), peersframe, TRUE, TRUE, 0);
 
     GtkWidget *framebox = gtk_vbox_new(FALSE, 0);
     gtk_box_pack_start(GTK_BOX(framebox), menubar, FALSE, FALSE, 0);
@@ -598,6 +605,10 @@ void create_ui(Arena scratch) {
     gtk_container_add(GTK_CONTAINER(mainwin), framebox);
 
     g_signal_connect(mainwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+    //GtkListBox_append(peerslistbox, "* ken");
+    //GtkListBox_append(peerslistbox, "* robtwister");
+    //GtkListBox_append(peerslistbox, "* joe");
 
     GUI.peerslistbox = peerslistbox;
 
@@ -608,6 +619,8 @@ void CB_mainwin_destroy(GtkWidget *w, gpointer data) {
     gtk_main_quit();
 }
 
+// Sync GPeers to peers listbox
+// ipeer: index to peer that was modified/added
 static gboolean IDLE_UpdatePeersListBox(gpointer data) {
     int ipeer = GPOINTER_TO_INT(data);
     Peer *peer = ArrayItem(GPeers, ipeer);

@@ -9,6 +9,33 @@ GtkWidget *create_label(char *caption) {
     gtk_widget_set_valign(lbl, GTK_ALIGN_END);
     return lbl;
 }
+GtkWidget *create_label2(char *caption) {
+    GtkWidget *lbl = gtk_label_new(caption);
+    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(lbl, GTK_ALIGN_CENTER);
+    return lbl;
+}
+GtkWidget *create_markup_label(char *markup) {
+    GtkWidget *lbl = gtk_label_new(NULL);
+    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(lbl, GTK_ALIGN_END);
+    gtk_label_set_markup(GTK_LABEL(lbl), markup);
+    return lbl;
+}
+GtkWidget *create_markup_label2(char *markup) {
+    GtkWidget *lbl = gtk_label_new(NULL);
+    gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+    gtk_widget_set_valign(lbl, GTK_ALIGN_CENTER);
+    gtk_label_set_markup(GTK_LABEL(lbl), markup);
+    return lbl;
+}
+
+void set_widget_margins(GtkWidget *w, int left, int right, int top, int bottom) {
+    gtk_widget_set_margin_start(w, left);
+    gtk_widget_set_margin_end(w, right);
+    gtk_widget_set_margin_top(w, top);
+    gtk_widget_set_margin_bottom(w, bottom);
+}
 
 int GtkListBox_numrows(GtkWidget *lb) {
     for (int i=0; ; i++) {
@@ -20,7 +47,7 @@ int GtkListBox_numrows(GtkWidget *lb) {
     return 0;
 }
 void GtkListBox_append(GtkWidget *lb, char *text) {
-    GtkWidget *lbl = create_label(text);
+    GtkWidget *lbl = create_label2(text);
     gtk_container_add(GTK_CONTAINER(lb), lbl);
 }
 void GtkListBox_replace(GtkWidget *lb, int index, char *text) {
