@@ -33,13 +33,15 @@ void parse_args(int argc, char **argv);
 int execute_command(Arena scratch, char *cmd);
 void run_shell(Arena scratch);
 void create_ui(Arena scratch);
+void create_chatwin(Arena scratch, Peer *peer);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
 
-void CB_mainwin_destroy(GtkWidget *w, gpointer data);
+static void CB_mainwin_destroy(GtkWidget *w, gpointer data);
+static void CB_peerslistbox_row_activated(GtkWidget *w, GtkListBoxRow *row, gpointer data);
 static gboolean IDLE_UpdatePeersListBox(gpointer data);
 
 typedef struct {
@@ -116,7 +118,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    create_ui(scratch);
+    //create_ui(scratch);
+    create_chatwin(scratch, NULL);
     gtk_main();
 
     // Break out of select() loop in THREAD_wait_for_tcp_messages().
@@ -605,6 +608,7 @@ void create_ui(Arena scratch) {
     gtk_container_add(GTK_CONTAINER(mainwin), framebox);
 
     g_signal_connect(mainwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    g_signal_connect(peerslistbox, "row-activated", G_CALLBACK(CB_peerslistbox_row_activated), NULL);
 
     //GtkListBox_append(peerslistbox, "* ken");
     //GtkListBox_append(peerslistbox, "* robtwister");
@@ -615,7 +619,7 @@ void create_ui(Arena scratch) {
     gtk_widget_show_all(mainwin);
 }
 
-void CB_mainwin_destroy(GtkWidget *w, gpointer data) {
+static void CB_mainwin_destroy(GtkWidget *w, gpointer data) {
     gtk_main_quit();
 }
 
@@ -634,4 +638,22 @@ static gboolean IDLE_UpdatePeersListBox(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+static void CB_peerslistbox_row_activated(GtkWidget *w, GtkListBoxRow *row, gpointer data) {
+    printf("row activated\n");
+}
+
+void create_chatwin(Arena scratch, Peer *peer) {
+    GtkWidget *chatwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+
+    GtkWidget *chattext_listbox = gtk_list_box_new();
+    gtk_container_add(GTK_CONTAINER(chatwin), chattext_listbox);
+
+    g_signal_connect(chatwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+    GtkListBox_append(chattext_listbox, "This is a chat that\ntook me a long time\nto write.");
+    GtkListBox_append(chattext_listbox, "Hello. Is this on?");
+    GtkListBox_append(chattext_listbox, "You've got your grand piano\nand you don't even play piano\nI'm the one who plays piano\nyou don't even play piano\nbut you part the water.");
+
+    gtk_widget_show_all(chatwin);
+}
 
