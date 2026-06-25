@@ -12,3 +12,5 @@ void GtkListBox_append(GtkWidget *lb, char *text);
 void GtkListBox_replace(GtkWidget *lb, int index, char *text);
 void GtkListBox_remove(GtkWidget *lb, int index);
 
+char *GtkTextView_gettext(GtkTextView *tv);
+

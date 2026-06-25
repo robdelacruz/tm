@@ -64,4 +64,11 @@ void GtkListBox_remove(GtkWidget *lb, int index) {
         gtk_container_remove(GTK_CONTAINER(lb), row);
 }
 
+char *GtkTextView_gettext(GtkTextView *tv) {
+    GtkTextBuffer *tb = gtk_text_view_get_buffer(tv);
+    GtkTextIter start, end;
+    gtk_text_buffer_get_start_iter(tb, &start);
+    gtk_text_buffer_get_end_iter(tb, &end);
+    return gtk_text_buffer_get_text(tb, &start, &end, FALSE);
+}
 

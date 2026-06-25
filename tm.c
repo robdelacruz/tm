@@ -654,30 +654,51 @@ void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, Peer *peer) 
     }
 }
 
+void CB_chatsend_clicked(GtkButton *btn, gpointer data);
+
 GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     GtkWidget *chatwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_default_size(GTK_WINDOW(chatwin), 480,640);
+    gtk_window_set_default_size(GTK_WINDOW(chatwin), 320,480);
     gtk_container_set_border_width(GTK_CONTAINER(chatwin), 10);
     String s = StringFormat(&scratch, "%s chat", CSTR(peer->alias));
     gtk_window_set_title(GTK_WINDOW(chatwin), CSTR(s));
 
-    GtkWidget *msgs_lb = gtk_list_box_new();
+    GtkWidget *msgslb = gtk_list_box_new();
+    GtkWidget *scrolllb = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(scrolllb), msgslb);
+
+    GtkWidget *sendcaption = create_label("Send Message");
     GtkWidget *sendtext = gtk_text_view_new();
-    gtk_widget_set_size_request(sendtext, -1, 50);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(sendtext), GTK_WRAP_WORD);
+    GtkWidget *scrolltext = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_size_request(scrolltext, -1, 80);
+    gtk_container_add(GTK_CONTAINER(scrolltext), sendtext);
+
     GtkWidget *sendbtn = gtk_button_new_with_mnemonic("_Send");
+    GtkWidget *hbox = gtk_hbox_new(FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(hbox), sendbtn, FALSE, FALSE, 0);
 
     GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(contentbox), msgs_lb, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(contentbox), sendtext, FALSE, FALSE, 10);
-    gtk_box_pack_start(GTK_BOX(contentbox), sendbtn, FALSE, FALSE, 5);
+    gtk_box_pack_start(GTK_BOX(contentbox), scrolllb, TRUE, TRUE, 10);
+    gtk_box_pack_start(GTK_BOX(contentbox), sendcaption, FALSE, FALSE, 5);
+    gtk_box_pack_start(GTK_BOX(contentbox), scrolltext, FALSE, FALSE, 3);
+    gtk_box_pack_start(GTK_BOX(contentbox), hbox, FALSE, FALSE, 3);
     gtk_container_add(GTK_CONTAINER(chatwin), contentbox);
 
     for (int i=0; i < GChatTexts.len; i++) {
         ChatText *chattext = ArrayItem(GChatTexts, i);
-        add_chattext(scratch, msgs_lb, chattext, peer);
+        add_chattext(scratch, msgslb, chattext, peer);
     }
+
+    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatsend_clicked), sendtext);
 
     gtk_widget_show_all(chatwin);
     return chatwin;
+}
+
+void CB_chatsend_clicked(GtkButton *btn, gpointer data) {
+    GtkTextView *tv = data;
+    char *text = GtkTextView_gettext(tv);
+    printf("send text: %s\n", text);
 }
 
