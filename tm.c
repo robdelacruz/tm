@@ -664,10 +664,12 @@ GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     GtkWidget *msgs_lb = gtk_list_box_new();
     GtkWidget *sendtext = gtk_text_view_new();
     gtk_widget_set_size_request(sendtext, -1, 50);
+    GtkWidget *sendbtn = gtk_button_new_with_mnemonic("_Send");
 
     GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
     gtk_box_pack_start(GTK_BOX(contentbox), msgs_lb, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(contentbox), sendtext, FALSE, FALSE, 10);
+    gtk_box_pack_start(GTK_BOX(contentbox), sendbtn, FALSE, FALSE, 5);
     gtk_container_add(GTK_CONTAINER(chatwin), contentbox);
 
     for (int i=0; i < GChatTexts.len; i++) {
