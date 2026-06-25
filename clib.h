@@ -67,6 +67,7 @@ void *realloc0(void *ptr, size_t oldsize, size_t newsize);
 u16 hash16(char *k, int size);
 
 Arena ArenaNew(u32 cap);
+Arena ArenaNewAuto(u8 *bytes, u32 bytes_size);
 void ArenaFree(Arena *a);
 void ArenaReset(Arena *a);
 void *ArenaAlloc(Arena *a, u32 size);

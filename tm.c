@@ -33,7 +33,7 @@ void parse_args(int argc, char **argv);
 int execute_command(Arena scratch, char *cmd);
 void run_shell(Arena scratch);
 void create_ui(Arena scratch);
-void create_chatwin(Arena scratch, Peer *peer);
+GtkWidget *create_chatwin(Arena scratch, Peer *peer);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -118,8 +118,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    //create_ui(scratch);
-    create_chatwin(scratch, NULL);
+    create_ui(scratch);
     gtk_main();
 
     // Break out of select() loop in THREAD_wait_for_tcp_messages().
@@ -552,6 +551,7 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
         ct.alias = StringDup(GChatTexts.arena, peer->alias);
         ct.hostname = StringDup(GChatTexts.arena, peer->hostname);
         ct.fromaddr = peer->fromaddr;
+        ct.toaddr = 0;
         ct.text = StringDup(GChatTexts.arena, text);
         ArrayAppend(&GChatTexts, &ct);
     }
@@ -610,10 +610,6 @@ void create_ui(Arena scratch) {
     g_signal_connect(mainwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
     g_signal_connect(peerslistbox, "row-activated", G_CALLBACK(CB_peerslistbox_row_activated), NULL);
 
-    //GtkListBox_append(peerslistbox, "* ken");
-    //GtkListBox_append(peerslistbox, "* robtwister");
-    //GtkListBox_append(peerslistbox, "* joe");
-
     GUI.peerslistbox = peerslistbox;
 
     gtk_widget_show_all(mainwin);
@@ -639,21 +635,47 @@ static gboolean IDLE_UpdatePeersListBox(gpointer data) {
 }
 
 static void CB_peerslistbox_row_activated(GtkWidget *w, GtkListBoxRow *row, gpointer data) {
-    printf("row activated\n");
+    u8 arenabytes[1024];
+    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
+
+    int ipeer = gtk_list_box_row_get_index(row);
+    Peer *peer = ArrayItem(GPeers, ipeer);
+
+    GtkWidget *chatwin = create_chatwin(scratch, peer);
 }
 
-void create_chatwin(Arena scratch, Peer *peer) {
+void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, Peer *peer) {
+    if (chattext->fromaddr == peer->fromaddr) {
+        String markuptext = StringFormat(&scratch, "<b>%s</b>:\n%s", CSTR(chattext->alias), CSTR(chattext->text));
+        GtkListBox_append(lb, CSTR(markuptext));
+    } else if (chattext->toaddr == peer->toaddr) {
+        String markuptext = StringFormat(&scratch, "<b>%s</b>:\n%s", CSTR(GAlias), CSTR(chattext->text));
+        GtkListBox_append(lb, CSTR(markuptext));
+    }
+}
+
+GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     GtkWidget *chatwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_size(GTK_WINDOW(chatwin), 480,640);
+    gtk_container_set_border_width(GTK_CONTAINER(chatwin), 10);
+    String s = StringFormat(&scratch, "%s chat", CSTR(peer->alias));
+    gtk_window_set_title(GTK_WINDOW(chatwin), CSTR(s));
 
-    GtkWidget *chattext_listbox = gtk_list_box_new();
-    gtk_container_add(GTK_CONTAINER(chatwin), chattext_listbox);
+    GtkWidget *msgs_lb = gtk_list_box_new();
+    GtkWidget *sendtext = gtk_text_view_new();
+    gtk_widget_set_size_request(sendtext, -1, 50);
 
-    g_signal_connect(chatwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(contentbox), msgs_lb, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(contentbox), sendtext, FALSE, FALSE, 10);
+    gtk_container_add(GTK_CONTAINER(chatwin), contentbox);
 
-    GtkListBox_append(chattext_listbox, "This is a chat that\ntook me a long time\nto write.");
-    GtkListBox_append(chattext_listbox, "Hello. Is this on?");
-    GtkListBox_append(chattext_listbox, "You've got your grand piano\nand you don't even play piano\nI'm the one who plays piano\nyou don't even play piano\nbut you part the water.");
+    for (int i=0; i < GChatTexts.len; i++) {
+        ChatText *chattext = ArrayItem(GChatTexts, i);
+        add_chattext(scratch, msgs_lb, chattext, peer);
+    }
 
     gtk_widget_show_all(chatwin);
+    return chatwin;
 }
 

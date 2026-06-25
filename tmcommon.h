@@ -58,6 +58,7 @@ typedef struct {
     String alias;
     String hostname;
     HostAddr fromaddr;
+    HostAddr toaddr;
     String text;
 } ChatText;
 

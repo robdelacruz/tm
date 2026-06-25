@@ -51,6 +51,13 @@ Arena ArenaNew(u32 cap) {
     a.cap = cap;
     return a;
 }
+Arena ArenaNewAuto(u8 *bytes, u32 bytes_size) {
+    Arena a;
+    a.bs = bytes;
+    a.pos = 0;
+    a.cap = bytes_size;
+    return a;
+}
 void ArenaFree(Arena *a) {
     free(a->bs);
     memset(a, 0, sizeof(Arena));
