@@ -656,6 +656,12 @@ void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, Peer *peer) 
 
 void CB_chatsend_clicked(GtkButton *btn, gpointer data);
 
+typedef struct {
+    Arena scratch;
+    HostAddr peer_fromaddr;
+    GtkTextView *sendtext;
+} ChatWinData;
+
 GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     GtkWidget *chatwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(chatwin), 320,480);
@@ -690,15 +696,43 @@ GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
         add_chattext(scratch, msgslb, chattext, peer);
     }
 
-    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatsend_clicked), sendtext);
+    ChatWinData *cwdata = malloc(sizeof(ChatWinData));
+    cwdata->scratch = scratch;
+    cwdata->peer_fromaddr = peer->fromaddr;
+    cwdata->sendtext = GTK_TEXT_VIEW(sendtext);
+    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatsend_clicked), cwdata);
 
     gtk_widget_show_all(chatwin);
     return chatwin;
 }
 
 void CB_chatsend_clicked(GtkButton *btn, gpointer data) {
-    GtkTextView *tv = data;
-    char *text = GtkTextView_gettext(tv);
-    printf("send text: %s\n", text);
+    ChatWinData *cwdata = data;
+
+    Peer *peer = Peer_find_fromaddr(GPeers, cwdata->peer_fromaddr);
+    if (peer == NULL) {
+//        free(cwdata);
+        return;
+    }
+
+    GtkTextView *tv = cwdata->sendtext;
+    char *chattext = GtkTextView_gettext(tv);
+    printf("send text: %s\n", chattext);
+
+    struct timeval timeout = {2,0};
+    int peerfd = OpenTcpConnectSocket2(GSendPort, peer->toaddr, &timeout);
+    if (peerfd == -1) {
+        printf("Can't connect to peer.\n");
+//        free(cwdata);
+        return;
+    }
+    char bufbytes[1024];
+    Buffer sendbuf = BUFFER(bufbytes, sizeof(bufbytes));
+    NetPackLen(&sendbuf, "%b%s", CHATTEXT, chattext);
+    if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
+        printf("Error sending to peer.\n");
+
+    ShutdownSocket(peerfd);
+//    free(cwdata);
 }
 
