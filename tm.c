@@ -48,17 +48,23 @@ typedef struct {
     GtkWidget *peerslistbox;
 } TMUI;
 
+typedef struct {
+    GtkWidget *chatwin;
+    GtkWidget *chattext;
+    int hpeer;
+} ChatWin;
+
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
 u16 GSendPort = SEND_PORT;
 u16 GListenPort = LISTEN_PORT;
 String GAlias;
 String GHostname;
-
-Array GPeers;
-Array GChatTexts;
 int GTrackerFD=0;
 HostAddr GTrackerAddr=0;
+
+Array GChatTexts;
+Array GChatWins;
 
 int GUnblockSelect_writefd=0;
 
@@ -70,6 +76,8 @@ int main(int argc, char *argv[]) {
     Arena scratch = ArenaNew(4*1024);
 
     gtk_init(&argc, &argv);
+    init_tmdata(&arena, scratch);
+
     signal(SIGINT, sigint);
 
     if (getlogin() != NULL)
@@ -98,7 +106,6 @@ int main(int argc, char *argv[]) {
     }
     GTrackerAddr = HostAddrFromSockAddr(&tracker_sa);
 
-    GPeers = ArrayNew(&arena, 64, sizeof(Peer));
     GChatTexts = ArrayNew(&arena, 64, sizeof(ChatText));
 
     struct timeval timeout = {2, 0};
@@ -276,7 +283,7 @@ int execute_command(Arena scratch, char *cmd) {
             } else if (StringEquals(token, "knock")) {
                 return 0;
             } else if (StringEquals(token, "peers")) {
-                print_peers(GPeers);
+                print_peers();
                 return 0;
             } else if (StringEquals(token, "chats")) {
                 print_chattexts(GChatTexts);
@@ -293,21 +300,24 @@ int execute_command(Arena scratch, char *cmd) {
                 return 0;
 
             // Send chattext to sendalias
-            Peer *p = Peer_find_alias(GPeers, CSTR(sendalias));
-            if (p == NULL) {
+            TMHandle hpeer = find_peer_alias(CSTR(sendalias));
+            if (hpeer == -1) {
                 printf("Alias %s is not online.\n", CSTR(sendalias));
                 return 0;
             }
+
+            HostAddr toaddr=0;
+            get_peer_data(hpeer, NULL, NULL, NULL, &toaddr);
             struct timeval timeout = {2,0};
-            int peerfd = OpenTcpConnectSocket2(GSendPort, p->toaddr, &timeout);
+            int peerfd = OpenTcpConnectSocket2(GSendPort, toaddr, &timeout);
             if (peerfd == -1) {
-                printf("Can't connect to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(p->toaddr), ntohs(HostAddr_port(p->toaddr)));
+                printf("Can't connect to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
                 return 0;
             }
             Buffer sendbuf = BufferNew(&scratch, 255);
             NetPackLen(&sendbuf, "%b%s", CHATTEXT, CSTR(chattext));
             if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
-                printf("Error sending to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(p->toaddr), ntohs(HostAddr_port(p->toaddr)));
+                printf("Error sending to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
 
             ShutdownSocket(peerfd);
             return 0;
@@ -507,18 +517,9 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 
         printf("** PEER_ONLINE %s/%s fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)), HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
 
-        int ipeer = Peer_find_fromaddr2(GPeers, peer_fromaddr);
-        if (ipeer == -1) {
-            Peer newpeer = Peer_new(GPeers.arena, alias, hostname, peer_fromaddr, peer_toaddr);
-            ArrayAppend(&GPeers, &newpeer);
-            int inewpeer = GPeers.len-1;
-            g_idle_add(IDLE_UpdatePeersListBox, GINT_TO_POINTER(inewpeer));
-        } else {
-            Peer *editpeer = ArrayItem(GPeers, ipeer);
-            Peer_replace(editpeer, alias, hostname, peer_fromaddr, peer_toaddr);
-            g_idle_add(IDLE_UpdatePeersListBox, GINT_TO_POINTER(ipeer));
-        }
-        print_peers(GPeers);
+        TMHandle hpeer = create_peer(CSTR(alias), CSTR(hostname), peer_fromaddr, peer_toaddr);
+        g_idle_add(IDLE_UpdatePeersListBox, GINT_TO_POINTER(hpeer));
+        print_peers();
     } else if (msgno == PEER_OFFLINE) {
         // Should only come from tracker
         if (!HostAddr_ipaddr_equals(fromaddr, GTrackerAddr))
@@ -529,28 +530,31 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 
         printf("** PEER_OFFLINE fromaddr: %s/%d **\n", HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)));
 
-        int ipeer = Peer_find_fromaddr2(GPeers, peer_fromaddr);
-        if (ipeer != -1) {
-            ArrayRemove(&GPeers, ipeer);
-            GtkListBox_remove(GUI.peerslistbox, ipeer);
+        TMHandle hpeer = find_peer_fromaddr(peer_fromaddr);
+        if (hpeer != -1) {
+            destroy_peer(hpeer);
+            //GtkListBox_remove(GUI.peerslistbox, ipeer);
         }
-        print_peers(GPeers);
+        print_peers();
     } else if (msgno == CHATTEXT) {
         String text = StringNew0(&scratch);
         NetUnpack(msgbytes, msglen, "%b%s", &msgno, &text);
 
-        Peer *peer = Peer_find_fromaddr(GPeers, fromaddr);
-        if (peer == NULL) {
+        TMHandle hpeer = find_peer_fromaddr(fromaddr);
+        if (hpeer == -1) {
             printf("** CHATTEXT from unknown text: %s fromaddr: %s/%d **\n", CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
             return;
         }
-        printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", CSTR(peer->alias), CSTR(peer->hostname), CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
+        String alias = StringNew0(&scratch);
+        String hostname = StringNew0(&scratch);
+        get_peer_data(hpeer, &alias, &hostname, NULL, NULL);
+        printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
 
         ChatText ct;
         ct.timestamp = time(NULL);
-        ct.alias = StringDup(GChatTexts.arena, peer->alias);
-        ct.hostname = StringDup(GChatTexts.arena, peer->hostname);
-        ct.fromaddr = peer->fromaddr;
+        ct.alias = StringDup(GChatTexts.arena, alias);
+        ct.hostname = StringDup(GChatTexts.arena, hostname);
+        ct.fromaddr = fromaddr;
         ct.toaddr = 0;
         ct.text = StringDup(GChatTexts.arena, text);
         ArrayAppend(&GChatTexts, &ct);
@@ -622,6 +626,7 @@ static void CB_mainwin_destroy(GtkWidget *w, gpointer data) {
 // Sync GPeers to peers listbox
 // ipeer: index to peer that was modified/added
 static gboolean IDLE_UpdatePeersListBox(gpointer data) {
+#if 0
     int ipeer = GPOINTER_TO_INT(data);
     Peer *peer = ArrayItem(GPeers, ipeer);
     if (ipeer > GtkListBox_numrows(GUI.peerslistbox)-1) {
@@ -630,6 +635,7 @@ static gboolean IDLE_UpdatePeersListBox(gpointer data) {
         GtkListBox_replace(GUI.peerslistbox, ipeer, CSTR(peer->alias));
     }
     gtk_widget_show_all(GUI.peerslistbox);
+#endif
 
     return G_SOURCE_REMOVE;
 }
@@ -639,9 +645,9 @@ static void CB_peerslistbox_row_activated(GtkWidget *w, GtkListBoxRow *row, gpoi
     Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
 
     int ipeer = gtk_list_box_row_get_index(row);
-    Peer *peer = ArrayItem(GPeers, ipeer);
+//    Peer *peer = ArrayItem(GPeers, ipeer);
 
-    GtkWidget *chatwin = create_chatwin(scratch, peer);
+//    GtkWidget *chatwin = create_chatwin(scratch, peer);
 }
 
 void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, Peer *peer) {
@@ -656,12 +662,6 @@ void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, Peer *peer) 
 
 void CB_chatsend_clicked(GtkButton *btn, gpointer data);
 
-typedef struct {
-    Arena scratch;
-    HostAddr peer_fromaddr;
-    GtkTextView *sendtext;
-} ChatWinData;
-
 GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     GtkWidget *chatwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(chatwin), 320,480);
@@ -674,11 +674,11 @@ GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     gtk_container_add(GTK_CONTAINER(scrolllb), msgslb);
 
     GtkWidget *sendcaption = create_label("Send Message");
-    GtkWidget *sendtext = gtk_text_view_new();
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(sendtext), GTK_WRAP_WORD);
+    GtkWidget *chattext = gtk_text_view_new();
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(chattext), GTK_WRAP_WORD);
     GtkWidget *scrolltext = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_size_request(scrolltext, -1, 80);
-    gtk_container_add(GTK_CONTAINER(scrolltext), sendtext);
+    gtk_container_add(GTK_CONTAINER(scrolltext), chattext);
 
     GtkWidget *sendbtn = gtk_button_new_with_mnemonic("_Send");
     GtkWidget *hbox = gtk_hbox_new(FALSE, 0);
@@ -696,43 +696,12 @@ GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
         add_chattext(scratch, msgslb, chattext, peer);
     }
 
-    ChatWinData *cwdata = malloc(sizeof(ChatWinData));
-    cwdata->scratch = scratch;
-    cwdata->peer_fromaddr = peer->fromaddr;
-    cwdata->sendtext = GTK_TEXT_VIEW(sendtext);
-    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatsend_clicked), cwdata);
+    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatsend_clicked), NULL);
 
     gtk_widget_show_all(chatwin);
     return chatwin;
 }
 
 void CB_chatsend_clicked(GtkButton *btn, gpointer data) {
-    ChatWinData *cwdata = data;
-
-    Peer *peer = Peer_find_fromaddr(GPeers, cwdata->peer_fromaddr);
-    if (peer == NULL) {
-//        free(cwdata);
-        return;
-    }
-
-    GtkTextView *tv = cwdata->sendtext;
-    char *chattext = GtkTextView_gettext(tv);
-    printf("send text: %s\n", chattext);
-
-    struct timeval timeout = {2,0};
-    int peerfd = OpenTcpConnectSocket2(GSendPort, peer->toaddr, &timeout);
-    if (peerfd == -1) {
-        printf("Can't connect to peer.\n");
-//        free(cwdata);
-        return;
-    }
-    char bufbytes[1024];
-    Buffer sendbuf = BUFFER(bufbytes, sizeof(bufbytes));
-    NetPackLen(&sendbuf, "%b%s", CHATTEXT, chattext);
-    if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
-        printf("Error sending to peer.\n");
-
-    ShutdownSocket(peerfd);
-//    free(cwdata);
 }
 

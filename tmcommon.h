@@ -8,6 +8,8 @@
 #define BYE 4
 #define CHATTEXT 5
 
+typedef int TMHandle;
+
 typedef struct {
     u8 msgno;
     String alias;
@@ -38,6 +40,7 @@ typedef struct {
 } ChatTextMsg;
 
 typedef struct {
+    TMHandle hpeer;
     String alias;
     String hostname;
     HostAddr fromaddr;
@@ -67,15 +70,17 @@ int SocketCtx_find_by_fd2(Array ctxs, int fd);
 SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr);
 int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr);
 
-Peer Peer_new(Arena *arena, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
-void Peer_replace(Peer *peer, String alias, String hostname, HostAddr fromaddr, HostAddr toaddr);
-Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr);
-int Peer_find_fromaddr2(Array peers, HostAddr fromaddr);
-Peer *Peer_find_alias(Array peers, char *alias);
-void print_peers(Array peers);
+void init_tmdata(Arena *arena, Arena scratch);
+Array get_peers_array();
+void print_peers();
+TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr toaddr);
+void destroy_peer(TMHandle hpeer);
+TMHandle find_peer_fromaddr(HostAddr fromaddr);
+TMHandle find_peer_alias(char *alias);
+int get_peer_data(TMHandle hpeer, String *alias, String *hostname, HostAddr *fromaddr, HostAddr *toaddr);
 
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
-void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd);
+void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 void print_chattexts(Array chattexts);
 

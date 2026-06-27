@@ -26,24 +26,20 @@ void parse_args(int argc, char **argv);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
-void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array peers, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 String GTrackerHost;
 u16 GTrackerPort = TRACKER_PORT;
 
-Arena GArena, GScratch;
-Array GPeers;
-
 int main(int argc, char *argv[]) {
-    GArena = ArenaNew(64*1024);
-    GScratch = ArenaNew(1024);
+    Arena arena = ArenaNew(64*1024);
+    Arena scratch = ArenaNew(1024);
 
-    GTrackerHost = StringNew(&GArena, TRACKER_HOST);
+    init_tmdata(&arena, scratch);
+
+    GTrackerHost = StringNew(&arena, TRACKER_HOST);
     GTrackerPort = TRACKER_PORT;
 
     parse_args(argc, argv);
-
-    GPeers = ArrayNew(&GArena, 64, sizeof(Peer));
 
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
@@ -221,35 +217,31 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
         // Inform all peers of new peer. 
         Buffer sendbuf = BufferNew(&scratch, 1024);
         NetPackLen(&sendbuf, "%b%s%s%L%L", PEER_ONLINE, CSTR(alias), CSTR(hostname), fromaddr, toaddr);
-        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, GPeers, socketctxs, writefds, maxfd);
+        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, socketctxs, writefds, maxfd);
 
         // Inform new peer of existing peers.
-        for (int i=0; i < GPeers.len; i++) {
-            Peer *p = ArrayItem(GPeers, i);
+        Array peers = get_peers_array();
+        for (int i=0; i < peers.len; i++) {
+            Peer *p = ArrayItem(peers, i);
 
             BufferClear(&sendbuf);
             NetPackLen(&sendbuf, "%b%s%s%L%L", PEER_ONLINE, CSTR(p->alias), CSTR(p->hostname), p->fromaddr, p->toaddr);
             send_msg_to_hostaddr(scratch, sendbuf.bs, sendbuf.len, toaddr, socketctxs, writefds, maxfd);
         }
 
-        Peer newpeer = Peer_new(GPeers.arena, alias, hostname, fromaddr, toaddr);
-        int ipeer = Peer_find_fromaddr2(GPeers, fromaddr);
-        if (ipeer == -1)
-            ArrayAppend(&GPeers, &newpeer);
-        else
-            ArrayReplace(&GPeers, ipeer, &newpeer);
-        print_peers(GPeers);
+        create_peer(CSTR(alias), CSTR(hostname), fromaddr, toaddr);
+        print_peers();
     } else if (msgno == BYE) {
         printf("** BYE ** received from %s/%d **\n", HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
-        int ipeer = Peer_find_fromaddr2(GPeers, fromaddr);
-        if (ipeer != -1)
-            ArrayRemove(&GPeers, ipeer);
-        print_peers(GPeers);
+        TMHandle hpeer = find_peer_fromaddr(fromaddr);
+        if (hpeer != -1)
+            destroy_peer(hpeer);
+        print_peers();
 
         // Inform all peers that this peer is going offline.
         Buffer sendbuf = BufferNew(&scratch, 1024);
         NetPackLen(&sendbuf, "%b%L", PEER_OFFLINE, fromaddr);
-        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, GPeers, socketctxs, writefds, maxfd);
+        send_msg_to_peers(scratch, sendbuf.bs, sendbuf.len, socketctxs, writefds, maxfd);
 
     }
 }
