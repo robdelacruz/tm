@@ -37,6 +37,10 @@ void set_widget_margins(GtkWidget *w, int left, int right, int top, int bottom) 
     gtk_widget_set_margin_bottom(w, bottom);
 }
 
+void clear_controls(GtkWidget *w) {
+    gtk_container_foreach(GTK_CONTAINER(w), (GtkCallback) gtk_widget_destroy, NULL);
+}
+
 int GtkListBox_numrows(GtkWidget *lb) {
     for (int i=0; ; i++) {
         GtkListBoxRow *row = gtk_list_box_get_row_at_index(GTK_LIST_BOX(lb), i);

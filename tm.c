@@ -33,7 +33,11 @@ void parse_args(int argc, char **argv);
 int execute_command(Arena scratch, char *cmd);
 void run_shell(Arena scratch);
 void create_ui(Arena scratch);
-GtkWidget *create_chatwin(Arena scratch, Peer *peer);
+
+void open_chatwin(Arena scratch, TMHandle hpeer);
+static void CB_chatwin_destroy(GtkWidget *w, gpointer data);
+static void CB_chatwin_send(GtkWidget *w, gpointer data);
+void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, HostAddr peer_fromaddr, HostAddr peer_toaddr);
 
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
@@ -41,17 +45,18 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
 int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
 
 static void CB_mainwin_destroy(GtkWidget *w, gpointer data);
-static void CB_peerslistbox_row_activated(GtkWidget *w, GtkListBoxRow *row, gpointer data);
-static gboolean IDLE_UpdatePeersListBox(gpointer data);
+static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data);
+static gboolean IDLE_peer_online(gpointer data);
 
 typedef struct {
     GtkWidget *peerslistbox;
 } TMUI;
 
 typedef struct {
-    GtkWidget *chatwin;
-    GtkWidget *chattext;
-    int hpeer;
+    TMHandle hpeer;
+    GtkWidget *win;
+    GtkWidget *msghistorylb;
+    GtkWidget *sendtext;
 } ChatWin;
 
 String GTrackerHost;
@@ -107,6 +112,7 @@ int main(int argc, char *argv[]) {
     GTrackerAddr = HostAddrFromSockAddr(&tracker_sa);
 
     GChatTexts = ArrayNew(&arena, 64, sizeof(ChatText));
+    GChatWins = ArrayNew(&arena, 64, sizeof(ChatWin));
 
     struct timeval timeout = {2, 0};
     GTrackerFD = OpenTcpConnectSocket3(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
@@ -518,7 +524,7 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
         printf("** PEER_ONLINE %s/%s fromaddr: %s/%d toaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), HostAddr_ipaddress(peer_fromaddr), ntohs(HostAddr_port(peer_fromaddr)), HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
 
         TMHandle hpeer = create_peer(CSTR(alias), CSTR(hostname), peer_fromaddr, peer_toaddr);
-        g_idle_add(IDLE_UpdatePeersListBox, GINT_TO_POINTER(hpeer));
+        g_idle_add(IDLE_peer_online, GINT_TO_POINTER(hpeer));
         print_peers();
     } else if (msgno == PEER_OFFLINE) {
         // Should only come from tracker
@@ -612,7 +618,7 @@ void create_ui(Arena scratch) {
     gtk_container_add(GTK_CONTAINER(mainwin), framebox);
 
     g_signal_connect(mainwin, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-    g_signal_connect(peerslistbox, "row-activated", G_CALLBACK(CB_peerslistbox_row_activated), NULL);
+    g_signal_connect(peerslistbox, "row-activated", G_CALLBACK(CB_select_peer), NULL);
 
     GUI.peerslistbox = peerslistbox;
 
@@ -623,62 +629,85 @@ static void CB_mainwin_destroy(GtkWidget *w, gpointer data) {
     gtk_main_quit();
 }
 
-// Sync GPeers to peers listbox
-// ipeer: index to peer that was modified/added
-static gboolean IDLE_UpdatePeersListBox(gpointer data) {
-#if 0
-    int ipeer = GPOINTER_TO_INT(data);
-    Peer *peer = ArrayItem(GPeers, ipeer);
-    if (ipeer > GtkListBox_numrows(GUI.peerslistbox)-1) {
-        GtkListBox_append(GUI.peerslistbox, CSTR(peer->alias));
-    } else {
-        GtkListBox_replace(GUI.peerslistbox, ipeer, CSTR(peer->alias));
-    }
-    gtk_widget_show_all(GUI.peerslistbox);
-#endif
+// New peer appears, add to peers listbox.
+static gboolean IDLE_peer_online(gpointer data) {
+    u8 arenabytes[512];
+    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
 
+    TMHandle hpeer = GPOINTER_TO_INT(data);
+    String alias = StringNew0(&scratch);
+    int z = get_peer_data(hpeer, &alias, NULL, NULL, NULL);
+    if (z == -1)
+        return G_SOURCE_REMOVE;
+
+    GtkWidget *updaterow = NULL;
+
+    // Look for existing hpeer row in peers listbox
+    for (int i=0; ; i++) {
+        GtkWidget *row = GTK_WIDGET(gtk_list_box_get_row_at_index(GTK_LIST_BOX(GUI.peerslistbox), i));
+        if (row == NULL)
+            break;
+        TMHandle row_hpeer = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "hpeer"));
+        if (row_hpeer == hpeer) {
+            updaterow = row;
+            clear_controls(updaterow);
+            break;
+        }
+    }
+
+    // No existing hpeer, add new row
+    if (updaterow == NULL)
+        updaterow = gtk_list_box_row_new();
+
+    gtk_container_add(GTK_CONTAINER(updaterow), create_label2(CSTR(alias)));
+    g_object_set_data(G_OBJECT(updaterow), "hpeer", GINT_TO_POINTER(hpeer));
+    gtk_container_add(GTK_CONTAINER(GUI.peerslistbox), updaterow);
+
+    gtk_widget_show_all(GUI.peerslistbox);
     return G_SOURCE_REMOVE;
 }
 
-static void CB_peerslistbox_row_activated(GtkWidget *w, GtkListBoxRow *row, gpointer data) {
+static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data) {
     u8 arenabytes[1024];
     Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
 
-    int ipeer = gtk_list_box_row_get_index(row);
-//    Peer *peer = ArrayItem(GPeers, ipeer);
-
-//    GtkWidget *chatwin = create_chatwin(scratch, peer);
+    TMHandle hpeer = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "hpeer"));
+    open_chatwin(scratch, hpeer);
 }
 
-void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, Peer *peer) {
-    if (chattext->fromaddr == peer->fromaddr) {
-        String markuptext = StringFormat(&scratch, "<b>%s</b>:\n%s", CSTR(chattext->alias), CSTR(chattext->text));
-        GtkListBox_append(lb, CSTR(markuptext));
-    } else if (chattext->toaddr == peer->toaddr) {
-        String markuptext = StringFormat(&scratch, "<b>%s</b>:\n%s", CSTR(GAlias), CSTR(chattext->text));
-        GtkListBox_append(lb, CSTR(markuptext));
+void open_chatwin(Arena scratch, TMHandle hpeer) {
+    // Show existing chatwin if previously created
+    for (int i=0; i < GChatWins.len; i++) {
+        ChatWin *cw = ArrayItem(GChatWins, i);
+        if (cw->hpeer == hpeer) {
+            gtk_window_present(GTK_WINDOW(cw->win));
+            return;
+        }
     }
-}
 
-void CB_chatsend_clicked(GtkButton *btn, gpointer data);
+    String alias = StringNew0(&scratch);
+    HostAddr fromaddr, toaddr;
+    int z = get_peer_data(hpeer, &alias, NULL, &fromaddr, &toaddr);
+    if (z == -1)
+        return;
 
-GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
-    GtkWidget *chatwin = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_default_size(GTK_WINDOW(chatwin), 320,480);
-    gtk_container_set_border_width(GTK_CONTAINER(chatwin), 10);
-    String s = StringFormat(&scratch, "%s chat", CSTR(peer->alias));
-    gtk_window_set_title(GTK_WINDOW(chatwin), CSTR(s));
+    // Create new chat window for hpeer
+    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_size(GTK_WINDOW(win), 320,480);
+    gtk_container_set_border_width(GTK_CONTAINER(win), 10);
+    String s = StringFormat(&scratch, "%s chat", CSTR(alias));
+    gtk_window_set_title(GTK_WINDOW(win), CSTR(s));
 
-    GtkWidget *msgslb = gtk_list_box_new();
+    GtkWidget *msghistorylb = gtk_list_box_new();
     GtkWidget *scrolllb = gtk_scrolled_window_new(NULL, NULL);
-    gtk_container_add(GTK_CONTAINER(scrolllb), msgslb);
+    gtk_container_add(GTK_CONTAINER(scrolllb), msghistorylb);
 
     GtkWidget *sendcaption = create_label("Send Message");
-    GtkWidget *chattext = gtk_text_view_new();
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(chattext), GTK_WRAP_WORD);
+    GtkWidget *sendtext = gtk_text_view_new();
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(sendtext), GTK_WRAP_WORD);
     GtkWidget *scrolltext = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_size_request(scrolltext, -1, 80);
-    gtk_container_add(GTK_CONTAINER(scrolltext), chattext);
+    gtk_container_add(GTK_CONTAINER(scrolltext), sendtext);
 
     GtkWidget *sendbtn = gtk_button_new_with_mnemonic("_Send");
     GtkWidget *hbox = gtk_hbox_new(FALSE, 0);
@@ -689,19 +718,82 @@ GtkWidget *create_chatwin(Arena scratch, Peer *peer) {
     gtk_box_pack_start(GTK_BOX(contentbox), sendcaption, FALSE, FALSE, 5);
     gtk_box_pack_start(GTK_BOX(contentbox), scrolltext, FALSE, FALSE, 3);
     gtk_box_pack_start(GTK_BOX(contentbox), hbox, FALSE, FALSE, 3);
-    gtk_container_add(GTK_CONTAINER(chatwin), contentbox);
+    gtk_container_add(GTK_CONTAINER(win), contentbox);
 
     for (int i=0; i < GChatTexts.len; i++) {
         ChatText *chattext = ArrayItem(GChatTexts, i);
-        add_chattext(scratch, msgslb, chattext, peer);
+        add_chattext(scratch, msghistorylb, chattext, fromaddr, toaddr);
     }
 
-    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatsend_clicked), NULL);
+    g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatwin_send), GINT_TO_POINTER(hpeer));
+    g_signal_connect(win, "destroy", G_CALLBACK(CB_chatwin_destroy), GINT_TO_POINTER(hpeer));
 
-    gtk_widget_show_all(chatwin);
-    return chatwin;
+    ChatWin cw;
+    cw.hpeer = hpeer;
+    cw.win = win;
+    cw.msghistorylb = msghistorylb;
+    cw.sendtext = sendtext;
+    ArrayAppend(&GChatWins, &cw);
+
+    gtk_widget_show_all(win);
 }
 
-void CB_chatsend_clicked(GtkButton *btn, gpointer data) {
+static void CB_chatwin_destroy(GtkWidget *w, gpointer data) {
+    TMHandle hpeer = GPOINTER_TO_INT(data);
+
+    for (int i=0; i < GChatWins.len; i++) {
+        ChatWin *cw = ArrayItem(GChatWins, i);
+        if (cw->hpeer == hpeer) {
+            ArrayRemove(&GChatWins, i);
+            return;
+        }
+    }
+}
+static void CB_chatwin_send(GtkWidget *w, gpointer data) {
+    u8 arenabytes[512];
+    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
+
+    TMHandle hpeer = GPOINTER_TO_INT(data);
+
+    String sendalias = StringNew0(&scratch);
+    HostAddr toaddr=0;
+    int z = get_peer_data(hpeer, &sendalias, NULL, NULL, &toaddr);
+    if (z == -1)
+        return;
+
+    ChatWin *cw = NULL;
+    for (int i=0; i < GChatWins.len; i++) {
+        ChatWin *p = ArrayItem(GChatWins, i);
+        if (p->hpeer == hpeer) {
+            cw = p;
+            break;
+        }
+    }
+    if (cw == NULL)
+        return;
+
+    struct timeval timeout = {2,0};
+    int peerfd = OpenTcpConnectSocket2(GSendPort, toaddr, &timeout);
+    if (peerfd == -1) {
+        printf("Can't connect to peer (%s/%d)\n", HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
+        return;
+    }
+
+    char bufbytes[1024];
+    Buffer sendbuf = BUFFER(bufbytes, sizeof(bufbytes));
+    NetPackLen(&sendbuf, "%b%s", CHATTEXT, GtkTextView_gettext(GTK_TEXT_VIEW(cw->sendtext)));
+    if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
+        printf("Error sending to peer (%s/%d)\n", HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
+    ShutdownSocket(peerfd);
+}
+
+void add_chattext(Arena scratch, GtkWidget *lb, ChatText *chattext, HostAddr peer_fromaddr, HostAddr peer_toaddr) {
+    if (chattext->fromaddr == peer_fromaddr) {
+        String markuptext = StringFormat(&scratch, "<b>%s</b>:\n%s", CSTR(chattext->alias), CSTR(chattext->text));
+        GtkListBox_append(lb, CSTR(markuptext));
+    } else if (chattext->toaddr == peer_toaddr) {
+        String markuptext = StringFormat(&scratch, "<b>%s</b>:\n%s", CSTR(GAlias), CSTR(chattext->text));
+        GtkListBox_append(lb, CSTR(markuptext));
+    }
 }
 

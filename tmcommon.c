@@ -99,41 +99,16 @@ void Peer_replace(Peer *peer, char *alias, char *hostname, HostAddr fromaddr, Ho
     peer->fromaddr = fromaddr;
     peer->toaddr = toaddr;
 }
-Peer *Peer_find_fromaddr(Array peers, HostAddr fromaddr) {
-    for (int i=0; i < peers.len; i++) {
-        Peer *p = ArrayItem(peers, i);
-        if (p->fromaddr == fromaddr)
-            return p;
-    }
-    return NULL;
-}
-int Peer_find_fromaddr2(Array peers, HostAddr fromaddr) {
-    for (int i=0; i < peers.len; i++) {
-        Peer *p = ArrayItem(peers, i);
-        if (p->fromaddr == fromaddr)
-            return i;
-    }
-    return -1;
-}
-Peer *Peer_find_alias(Array peers, char *alias) {
-    for (int i=0; i < peers.len; i++) {
-        Peer *p = ArrayItem(peers, i);
-        if (StringEquals(p->alias, alias))
-            return p;
-    }
-    return NULL;
-}
-
 TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr toaddr) {
     assert(GPeers.cap != 0);
 
-    int ipeer = Peer_find_fromaddr2(GPeers, fromaddr);
-
-    // Replace existing peer
-    if (ipeer != -1) {
-        Peer *peer = ArrayItem(GPeers, ipeer);
-        Peer_replace(peer, alias, hostname, fromaddr, toaddr);
-        return peer->hpeer;
+    // Replace existing peer if same fromaddr exists
+    for (int i=0; i < GPeers.len; i++) {
+        Peer *p = ArrayItem(GPeers, i);
+        if (p->fromaddr == fromaddr) {
+            Peer_replace(p, alias, hostname, fromaddr, toaddr);
+            return p->hpeer;
+        }
     }
 
     // Add new peer
@@ -141,7 +116,6 @@ TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr to
     ArrayAppend(&GPeers, &peer);
     return peer.hpeer;
 }
-
 void destroy_peer(TMHandle hpeer) {
     for (int i=0; i < GPeers.len; i++) {
         Peer *p = ArrayItem(GPeers, i);
@@ -154,17 +128,20 @@ void destroy_peer(TMHandle hpeer) {
         }
     }
 }
-
 TMHandle find_peer_fromaddr(HostAddr fromaddr) {
-    Peer *p = Peer_find_fromaddr(GPeers, fromaddr);
-    if (p != NULL)
-        return p->hpeer;
+    for (int i=0; i < GPeers.len; i++) {
+        Peer *p = ArrayItem(GPeers, i);
+        if (p->fromaddr == fromaddr)
+            return p->hpeer;
+    }
     return -1;
 }
 TMHandle find_peer_alias(char *alias) {
-    Peer *p = Peer_find_alias(GPeers, alias);
-    if (p != NULL)
-        return p->hpeer;
+    for (int i=0; i < GPeers.len; i++) {
+        Peer *p = ArrayItem(GPeers, i);
+        if (StringEquals(p->alias, alias))
+            return p->hpeer;
+    }
     return -1;
 }
 int get_peer_data(TMHandle hpeer, String *palias, String *phostname, HostAddr *pfromaddr, HostAddr *ptoaddr) {
