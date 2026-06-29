@@ -51,7 +51,7 @@ int GtkListBox_numrows(GtkWidget *lb) {
     return 0;
 }
 void GtkListBox_append(GtkWidget *lb, char *text) {
-    GtkWidget *lbl = create_label2(text);
+    GtkWidget *lbl = create_markup_label2(text);
     gtk_container_add(GTK_CONTAINER(lb), lbl);
 }
 void GtkListBox_replace(GtkWidget *lb, int index, char *text) {
