@@ -382,15 +382,15 @@ int NetPackV(Buffer *buf, char *fmt, va_list args) {
                 BufferAppendChar(buf, l);
                 nbytes_packed += 4;
             } else if (*pfmt == 'L') {
-                u64 ll = va_arg(args, u32);
-                BufferAppendChar(buf, ll >> 56);
-                BufferAppendChar(buf, ll >> 48);
-                BufferAppendChar(buf, ll >> 40);
-                BufferAppendChar(buf, ll >> 32);
-                BufferAppendChar(buf, ll >> 24);
-                BufferAppendChar(buf, ll >> 16);
-                BufferAppendChar(buf, ll >> 8);
-                BufferAppendChar(buf, ll);
+                u64 ll = va_arg(args, u64);
+                BufferAppendByte(buf, ll >> 56);
+                BufferAppendByte(buf, ll >> 48);
+                BufferAppendByte(buf, ll >> 40);
+                BufferAppendByte(buf, ll >> 32);
+                BufferAppendByte(buf, ll >> 24);
+                BufferAppendByte(buf, ll >> 16);
+                BufferAppendByte(buf, ll >> 8);
+                BufferAppendByte(buf, ll);
                 nbytes_packed += 8;
             } else if (*pfmt == 's') {
                 char *s = va_arg(args, char *);
@@ -455,8 +455,8 @@ void NetUnpack(char *bs, int bslen, char *fmt, ...) {
     va_list args;
 
     va_start(args, fmt);
-    char *pbs = bs;
-    char *maxp = bs + bslen - 1;
+    u8 *pbs = (u8*)bs;
+    u8 *maxp = (u8*)bs + bslen - 1;
     for (char *pfmt = fmt; *pfmt != 0; pfmt++) {
         if (pbs > maxp) return;
 
@@ -528,7 +528,7 @@ void NetUnpack(char *bs, int bslen, char *fmt, ...) {
                 slen |= *pbs;
                 pbs++;
                 if (pbs > maxp) return;
-                StringAssignFromBytes(str, pbs, slen);
+                StringAssignFromBytes(str, (char*)pbs, slen);
                 pbs += slen;
             } else {
                 // Ignore any unsupported %? spec

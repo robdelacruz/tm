@@ -94,6 +94,7 @@ Buffer BufferNew(Arena *arena, u32 cap);
 void BufferClear(Buffer *buf);
 void BufferAppend(Buffer *buf, char *bs, u32 bslen);
 void BufferAppendChar(Buffer *buf, char c);
+void BufferAppendByte(Buffer *buf, u8 b);
 void BufferShift(Buffer *buf, int n);
 
 Array ArrayNew(Arena *arena, u16 cap, int itemsize);

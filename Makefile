@@ -9,7 +9,7 @@ all: tm t t2
 t: t.c clib.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS)
 
-t2: t2.c clib.c
+t2: t2.c clib.c cnet.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS)
 
 tm: tm.c clib.c cnet.c tmcommon.c uicommon.c

@@ -135,11 +135,7 @@ void string0test() {
     printf("s2 b: '%.*s'\n", s2.len, s2.bs);
 }
 
-
-int main(int argc, char *argv[]) {
-    arena = ArenaNew(255);
-    scratch = ArenaNew(255);
-
+void hashtest() {
     int maxhash = 0;
 
     u16 h1 = hash16("127.0.0.1/9001", maxhash);
@@ -149,6 +145,27 @@ int main(int argc, char *argv[]) {
     u16 h5 = hash16("127.0.0.1/9005", maxhash);
 
     printf("h1: %d\nh2: %d\nh3: %d\nh4: %d\nh5: %d\n", h1, h2, h3, h4, h5);
+}
+
+int main(int argc, char *argv[]) {
+    arena = ArenaNew(255);
+    scratch = ArenaNew(255);
+
+    Buffer buf = BufferNew(&arena, 32);
+    u64 ll1 = 0x123456789abcdef1;
+//    u64 ll1 = 0xaaaaaaaaaaaaaaaa;
+//    u64 ll1 = 0xaa;
+    u64 ll2 = 0;
+
+    NetPack(&buf, "%L", ll1);
+    NetUnpack(buf.bs, buf.len, "%L", &ll2);
+
+    printf("ll1: %llx\n", ll1);
+    printf("ll2: %llx\n", ll2);
+
+    for (int i=0; i < buf.len; i++) {
+        printf("[%d] %x\n", i, (u8)buf.bs[i]);
+    }
 
     return 0;
 }

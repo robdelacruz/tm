@@ -305,6 +305,9 @@ void BufferAppend(Buffer *buf, char *bs, u32 bslen) {
 void BufferAppendChar(Buffer *buf, char c) {
     BufferAppend(buf, &c, 1);
 }
+void BufferAppendByte(Buffer *buf, u8 b) {
+    BufferAppend(buf, (char *)&b, 1);
+}
 // Remove first n bytes of buffer
 void BufferShift(Buffer *buf, int n) {
     assert(buf->len <= buf->cap);
