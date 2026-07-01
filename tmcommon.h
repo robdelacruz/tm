@@ -58,8 +58,6 @@ typedef struct {
 
 typedef struct {
     time_t timestamp;
-    String alias;
-    String hostname;
     HostAddr fromaddr;
     HostAddr toaddr;
     String text;
@@ -82,5 +80,5 @@ int get_peer_data(TMHandle hpeer, String *alias, String *hostname, HostAddr *fro
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
-void print_chattexts(Array chattexts);
+void print_chattexts(Arena scratch, Array chattexts);
 

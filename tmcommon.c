@@ -222,7 +222,7 @@ void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array *socketc
     }
 }
 
-void print_chattexts(Array chattexts) {
+void print_chattexts(Arena scratch, Array chattexts) {
     if (chattexts.len == 0) {
         printf("Chat Texts (0)\n");
         return;
@@ -230,8 +230,17 @@ void print_chattexts(Array chattexts) {
 
     printf("Chat Texts (%d):\n", chattexts.len);
     for (int i=0; i < chattexts.len; i++) {
-        ChatText *p = ArrayItem(chattexts, i);
-        printf("[%d] From %s/%s: %s\n", i+1, CSTR(p->alias), CSTR(p->hostname), CSTR(p->text));
+        ChatText *ct = ArrayItem(chattexts, i);
+        TMHandle hpeer = find_peer_fromaddr(ct->fromaddr);
+        if (hpeer == -1) {
+            printf("[%d] from unknown peer: %s\n", i+1, CSTR(ct->text));
+        } else {
+            String peer_alias = StringNew0(&scratch);
+            String peer_hostname = StringNew0(&scratch);
+            int z = get_peer_data(hpeer, &peer_alias, &peer_hostname, NULL, NULL);
+            assert(z != -1);
+            printf("[%d] From %s/%s: %s\n", i+1, CSTR(peer_alias), CSTR(peer_hostname), CSTR(ct->text));
+        }
     }
 }
 
