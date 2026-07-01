@@ -52,6 +52,7 @@ int GtkListBox_numrows(GtkWidget *lb) {
 }
 void GtkListBox_append(GtkWidget *lb, char *text) {
     GtkWidget *lbl = create_markup_label2(text);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
     gtk_container_add(GTK_CONTAINER(lb), lbl);
 }
 void GtkListBox_replace(GtkWidget *lb, int index, char *text) {
@@ -60,6 +61,7 @@ void GtkListBox_replace(GtkWidget *lb, int index, char *text) {
         return;
     gtk_container_remove(GTK_CONTAINER(lb), row);
     GtkWidget *lbl = create_label(text);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
     gtk_list_box_insert(GTK_LIST_BOX(lb), lbl, index);
 }
 void GtkListBox_remove(GtkWidget *lb, int index) {

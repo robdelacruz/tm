@@ -717,15 +717,17 @@ int find_chatwin_from_peer2(TMHandle hpeer) {
 }
 void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, String peer_alias, String peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr) {
     clear_controls(msglb);
+
     for (int i=0; i < chattexts.len; i++) {
+        Arena tmpscratch = scratch;
         ChatText *ct = ArrayItem(chattexts, i);
         if (ct->fromaddr == peer_fromaddr) {
             // Received chat from peer
-            String markuptext = StringFormat(&scratch, "<span color='blue' weight='bold'>%s</span>:\n%s", CSTR(peer_alias), CSTR(ct->text));
+            String markuptext = StringFormat(&tmpscratch, "<span color='blue' weight='bold'>%s</span>:\n%s", CSTR(peer_alias), CSTR(ct->text));
             GtkListBox_append(msglb, CSTR(markuptext));
         } else if (ct->toaddr == peer_toaddr) {
             // Sent chat to peer
-            String markuptext = StringFormat(&scratch, "<span color='darkgreen' weight='bold'>%s</span>:\n%s", CSTR(GAlias), CSTR(ct->text));
+            String markuptext = StringFormat(&tmpscratch, "<span color='darkgreen' weight='bold'>%s</span>:\n%s", CSTR(GAlias), CSTR(ct->text));
             GtkListBox_append(msglb, CSTR(markuptext));
         }
     }
@@ -766,6 +768,7 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     GtkWidget *sendtext = gtk_text_view_new();
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(sendtext), GTK_WRAP_WORD);
     GtkWidget *scrolltext = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolltext), GTK_POLICY_AUTOMATIC, GTK_POLICY_ALWAYS);
     gtk_widget_set_size_request(scrolltext, -1, 80);
     gtk_container_add(GTK_CONTAINER(scrolltext), sendtext);
 
@@ -802,7 +805,7 @@ static void CB_chatwin_destroy(GtkWidget *w, gpointer data) {
         ArrayRemove(&GChatWins, icw);
 }
 static void CB_chatwin_send(GtkWidget *w, gpointer data) {
-    u8 arenabytes[512];
+    u8 arenabytes[4096];
     Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
 
     TMHandle hpeer = GPOINTER_TO_INT(data);
@@ -825,7 +828,7 @@ static void CB_chatwin_send(GtkWidget *w, gpointer data) {
         return;
     }
 
-    char bufbytes[1024];
+    char bufbytes[4096];
     Buffer sendbuf = BUFFER(bufbytes, sizeof(bufbytes));
     NetPackLen(&sendbuf, "%b%s", CHATTEXT, GtkTextView_gettext(GTK_TEXT_VIEW(cw->sendtext)));
     if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
