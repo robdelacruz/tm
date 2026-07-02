@@ -56,6 +56,7 @@ void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
+int ConnectAndSendMsg(int bindport, char *desthost, int destport, int bufsize, struct timeval *timeout, char *fmt, ...);
 
 static gboolean IDLE_peer_online(gpointer data);
 static gboolean IDLE_peer_offline(gpointer data);
@@ -67,7 +68,6 @@ u16 GSendPort = SEND_PORT;
 u16 GListenPort = LISTEN_PORT;
 String GAlias;
 String GHostname;
-int GTrackerFD=0;
 HostAddr GTrackerAddr=0;
 
 Array GChatTexts;
@@ -104,7 +104,7 @@ int main(int argc, char *argv[]) {
     parse_args(argc, argv);
 
     printf("TinyMsg listenport: %d sendport: %d user: %s/%s\n", GListenPort, GSendPort, CSTR(GAlias), CSTR(GHostname));
-    printf("Connected to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
+    printf("Using tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
 
     struct sockaddr_in tracker_sa;
     if (GetIPV4Address(CSTR(GTrackerHost), GTrackerPort, &tracker_sa) == -1) {
@@ -116,18 +116,12 @@ int main(int argc, char *argv[]) {
     GChatTexts = ArrayNew(&arena, 64, sizeof(ChatText));
     GChatWins = ArrayNew(&arena, 64, sizeof(UIChatWin));
 
-    struct timeval timeout = {2, 0};
-    GTrackerFD = OpenTcpConnectSocket3(GSendPort, CSTR(GTrackerHost), GTrackerPort, &timeout);
-    if (GTrackerFD == -1) {
-        printf("Can't connect to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
-        exit(1);
-    }
-
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
     //GThread *thread_wait_tcp = g_thread_new("wait_for_tcp_messages", THREAD_wait_for_tcp_messages, NULL);
 
-    z = SendMsg(GTrackerFD, 128, &timeout, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
+    struct timeval timeout = {2, 0};
+    z = ConnectAndSendMsg(GSendPort, CSTR(GTrackerHost), GTrackerPort, 128, &timeout, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
     if (z == -1) {
         printf("Error sending knock to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         return 1;
@@ -143,8 +137,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "write(): %s\n", strerror(errno));
     assert(z > 0);
 
-    SendMsg(GTrackerFD, 10, &timeout, "%b", BYE);
-    ShutdownSocket(GTrackerFD);
+    ConnectAndSendMsg(GSendPort, CSTR(GTrackerHost), GTrackerPort, 10, &timeout, "%b", BYE);
 
     pthread_join(thread_wait_tcp, NULL);
     //g_thread_join(thread_wait_tcp);
@@ -167,7 +160,7 @@ void run_shell(Arena scratch) {
 
 void sigint(int sig) {
     struct timeval timeout = {2, 0};
-    SendMsg(GTrackerFD, 10, &timeout, "%b", BYE);
+    ConnectAndSendMsg(GSendPort, CSTR(GTrackerHost), GTrackerPort, 10, &timeout, "%b", BYE);
     printf("Ctrl-C Bye.\n");
     exit(0);
 }
@@ -581,6 +574,23 @@ int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...) {
     va_start(args, fmt);
     int z = SendMsgV(destfd, bufsize, timeout, fmt, args);
     va_end(args);
+    return z;
+}
+
+int ConnectAndSendMsg(int bindport, char *desthost, int destport, int bufsize, struct timeval *timeout, char *fmt, ...) {
+    int destfd = OpenTcpConnectSocket3(bindport, desthost, destport, timeout);
+    if (destfd == -1) {
+        printf("Can't connect to host %s/%d\n", desthost, destport);
+        return -1;
+    }
+    va_list args;
+    va_start(args, fmt);
+    int z = SendMsgV(destfd, bufsize, timeout, fmt, args);
+    if (z == -1)
+        printf("Error sending to host %s/%d\n", desthost, destport);
+    va_end(args);
+
+    ShutdownSocket(destfd);
     return z;
 }
 

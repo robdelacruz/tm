@@ -19,6 +19,23 @@
 #include "cnet.h"
 #include "tmcommon.h"
 
+SocketCtx *SocketCtx_new(int fd, Array *ctxs, HostAddr fromaddr, HostAddr toaddr, int init_readbuf_size, int init_writebuf_size) {
+    SocketCtx ctx;
+    ctx.fd = fd;
+    ctx.fromaddr = fromaddr;
+    ctx.toaddr = toaddr;
+    ctx.readbuf = BufferNew(ctxs->arena, init_readbuf_size);
+    ctx.writebuf = BufferNew(ctxs->arena, init_writebuf_size);
+    ctx.msglen = 0;
+    ctx.shut_rd = 0;
+
+    ArrayAppend(ctxs, &ctx);
+    assert(ctxs->len > 0);
+
+    SocketCtx *retctx = ArrayItem(*ctxs, ctxs->len-1);
+    assert(retctx->fd == fd);
+    return retctx;
+}
 SocketCtx *SocketCtx_find_by_fd(Array ctxs, int fd) {
     for (int i=0; i < ctxs.len; i++) {
         SocketCtx *ctx = ArrayItem(ctxs, i);
@@ -50,6 +67,11 @@ int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr) {
             return i;
     }
     return -1;
+}
+void SocketCtx_close_and_remove(SocketCtx *ctx, Array *ctxs) {
+    ShutdownSocket(ctx->fd);
+    int index = SocketCtx_find_by_fd2(*ctxs, ctx->fd);
+    ArrayRemove(ctxs, index);
 }
 
 Array GPeers = {0};
@@ -200,18 +222,13 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr toa
         return 0;
     }
     if (z == 1) {
-        SocketCtx newctx;
-        newctx.fd = destfd;
-        newctx.fromaddr = 0;
-        newctx.toaddr = toaddr;
-        newctx.readbuf = BufferNew(socketctxs->arena, 1);
-        newctx.writebuf = BufferNew(socketctxs->arena, 64);
-        BufferAppend(&newctx.writebuf, sendbuf.bs, sendbuf.len);
-        newctx.msglen = 0;
-        ArrayAppend(socketctxs, &newctx);
+        SocketCtx *ctx = SocketCtx_new(destfd, socketctxs, 0, toaddr, 1, 64);
+        BufferAppend(&ctx->writebuf, sendbuf.bs, sendbuf.len);
+        FD_SET(destfd, writefds);
+        if (destfd > *maxfd)
+            *maxfd = destfd;
     }
 
-    ShutdownSocket(destfd);
     return 0;
 }
 

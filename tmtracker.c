@@ -87,9 +87,9 @@ void* THREAD_wait_for_tcp_messages(void *data) {
     FD_SET(listenfd, &readfds);
     int maxfd = listenfd;
 
-    Arena tarena = ArenaNew(1024*1024);
     Arena tscratch = ArenaNew(1024*1024);
-    Array socketctxs = ArrayNew(&tarena, 64, sizeof(SocketCtx));
+    Arena socketctx_arena = ArenaNew(1024*1024);
+    Array socketctxs = ArrayNew(&socketctx_arena, 64, sizeof(SocketCtx));
 
     printf("Tracker listening for messages on %s/%d...\n", CSTR(GTrackerHost), GTrackerPort);
     while (1) {
@@ -124,19 +124,11 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                         continue;
                     }
 
-                    SocketCtx socketctx;
-                    socketctx.fd = socketfd;
-                    socketctx.fromaddr = HostAddrFromSockAddr((struct sockaddr_in *)&ss);
-                    socketctx.toaddr = 0;
-                    socketctx.readbuf = BufferNew(&tarena, 64);
-                    socketctx.writebuf = BufferNew(&tarena, 64);
-                    socketctx.msglen = 0;
-                    ArrayAppend(&socketctxs, &socketctx);
-
+                    SocketCtx_new(socketfd, &socketctxs, HostAddrFromSockAddr((struct sockaddr_in *) &ss), 0, 64, 1);
                     FD_SET(socketfd, &readfds);
                     if (socketfd > maxfd)
                         maxfd = socketfd;
-                    //printf("New socketfd: %d\n", socketfd);
+                    printf("New socketfd: %d\n", socketfd);
                 } else {
                     // Received bytes from peer
                     int socketfd = i;
@@ -179,23 +171,58 @@ void* THREAD_wait_for_tcp_messages(void *data) {
                     }
                     if (read_eof) {
                         FD_CLR(socketfd, &readfds);
-                        ShutdownSocket(socketfd);
+                        shutdown(socketfd, SHUT_RD);
+                        socketctx->shut_rd = 1;
 
-                        int index = SocketCtx_find_by_fd2(socketctxs, socketfd);
-                        ArrayRemove(&socketctxs, index);
-                        if (socketctxs.len == 0) {
-                            ArenaReset(&tarena);
-                            socketctxs = ArrayNew(&tarena, 64, sizeof(SocketCtx));
+                        if (socketctx->shut_rd && socketctx->writebuf.len == 0) {
+                            SocketCtx_close_and_remove(socketctx, &socketctxs);
+
+                            if (socketctxs.len == 0) {
+                                ArenaReset(socketctxs.arena);
+                                socketctxs = ArrayNew(socketctxs.arena, 64, sizeof(SocketCtx));
+                            }
+                            printf("Closed socketfd %d\n", socketfd);
                         }
-                        //printf("Closed socketfd %d\n", socketfd);
                     }
                 }
             }
+            if (FD_ISSET(i, &tmp_writefds)) {
+                int socketfd = i;
+
+                SocketCtx *socketctx = SocketCtx_find_by_fd(socketctxs, socketfd);
+                if (socketctx == NULL) {
+                    fprintf(stderr, "socketfd %d not found in socketctxs\n", socketfd);
+                    continue;
+                }
+
+                z = NetSend2(socketctx->fd, &socketctx->writebuf, &writefds, &maxfd);
+                if (z == 0) {
+                    FD_CLR(socketfd, &writefds);
+                    shutdown(socketfd, SHUT_WR);
+                }
+                if (z == -1) {
+                    FD_CLR(socketfd, &writefds);
+                    shutdown(socketfd, SHUT_WR);
+                    BufferClear(&socketctx->writebuf);
+                }
+
+                if (socketctx->shut_rd && socketctx->writebuf.len == 0) {
+                    SocketCtx_close_and_remove(socketctx, &socketctxs);
+
+                    if (socketctxs.len == 0) {
+                        ArenaReset(socketctxs.arena);
+                        socketctxs = ArrayNew(socketctxs.arena, 64, sizeof(SocketCtx));
+                    }
+                    printf("Closed socketfd %d\n", socketfd);
+                }
+
+            }
+
         }
     }
 
     ShutdownSocket(listenfd);
-    ArenaFree(&tarena);
+    ArenaFree(&socketctx_arena);
     ArenaFree(&tscratch);
 }
 

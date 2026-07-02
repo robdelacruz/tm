@@ -54,6 +54,7 @@ typedef struct {
     Buffer readbuf;
     Buffer writebuf;
     u16 msglen;
+    int shut_rd;
 } SocketCtx;
 
 typedef struct {
@@ -63,10 +64,12 @@ typedef struct {
     String text;
 } ChatText;
 
+SocketCtx *SocketCtx_new(int fd, Array *ctxs, HostAddr fromaddr, HostAddr toaddr, int init_readbuf_size, int init_writebuf_size);
 SocketCtx *SocketCtx_find_by_fd(Array ctxs, int fd);
 int SocketCtx_find_by_fd2(Array ctxs, int fd);
 SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr);
 int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr);
+void SocketCtx_close_and_remove(SocketCtx *ctx, Array *ctxs);
 
 void init_tmdata(Arena *arena, Arena scratch);
 Array get_peers_array();
