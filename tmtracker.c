@@ -34,8 +34,6 @@ int main(int argc, char *argv[]) {
     Arena arena = ArenaNew(64*1024);
     Arena scratch = ArenaNew(1024);
 
-    init_tmdata(&arena, scratch);
-
     GTrackerHost = StringNew(&arena, TRACKER_HOST);
     GTrackerPort = TRACKER_PORT;
 

@@ -71,7 +71,6 @@ SocketCtx *SocketCtx_find_by_toaddr(Array ctxs, HostAddr toaddr);
 int SocketCtx_find_by_toaddr2(Array ctxs, HostAddr toaddr);
 void SocketCtx_close_and_remove(SocketCtx *ctx, Array *ctxs);
 
-void init_tmdata(Arena *arena, Arena scratch);
 Array get_peers_array();
 void print_peers();
 TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr toaddr);

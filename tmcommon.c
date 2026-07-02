@@ -74,12 +74,10 @@ void SocketCtx_close_and_remove(SocketCtx *ctx, Array *ctxs) {
     ArrayRemove(ctxs, index);
 }
 
+Arena GPeersArena = {0};
 Array GPeers = {0};
 TMHandle GNextPeerHandle = 1;
 
-void init_tmdata(Arena *arena, Arena scratch) {
-    GPeers = ArrayNew(arena, 64, sizeof(Peer));
-}
 Array get_peers_array() {
     return GPeers;
 }
@@ -122,7 +120,11 @@ void Peer_replace(Peer *peer, char *alias, char *hostname, HostAddr fromaddr, Ho
     peer->toaddr = toaddr;
 }
 TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr toaddr) {
-    assert(GPeers.cap != 0);
+    if (GPeers.cap == 0) {
+        assert(GPeersArena.cap == 0);
+        GPeersArena = ArenaNew(64*1024);
+        GPeers = ArrayNew(&GPeersArena, 64, sizeof(Peer));
+    }
 
     // Replace existing peer if same fromaddr exists
     for (int i=0; i < GPeers.len; i++) {
@@ -146,6 +148,12 @@ void destroy_peer(TMHandle hpeer) {
 
             if (hpeer == GNextPeerHandle-1)
                 GNextPeerHandle = hpeer;
+
+            if (GPeers.len == 0) {
+                ArenaReset(&GPeersArena);
+                GPeers = ArrayNew(&GPeersArena, 64, sizeof(Peer));
+                GNextPeerHandle = 1;
+            }
             return;
         }
     }

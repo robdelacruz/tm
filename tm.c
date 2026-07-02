@@ -45,18 +45,18 @@ void parse_args(int argc, char **argv);
 int execute_command(Arena scratch, char *cmd);
 void run_shell(Arena scratch);
 
-void open_mainwin(Arena scratch);
-static void CB_mainwin_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data);
-
-void open_chatwin(Arena scratch, TMHandle hpeer);
-static void CB_chatwin_destroy(GtkWidget *w, gpointer data);
-static void CB_chatwin_send(GtkWidget *w, gpointer data);
-
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
 int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
 int ConnectAndSendMsg(int bindport, char *desthost, int destport, int bufsize, struct timeval *timeout, char *fmt, ...);
+
+void open_mainwin(Arena scratch);
+void open_chatwin(Arena scratch, TMHandle hpeer);
+
+static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data);
+static void CB_chatwin_destroy(GtkWidget *w, gpointer data);
+static void CB_chatwin_send(GtkWidget *w, gpointer data);
 
 static gboolean IDLE_peer_online(gpointer data);
 static gboolean IDLE_peer_offline(gpointer data);
@@ -70,35 +70,35 @@ String GAlias;
 String GHostname;
 HostAddr GTrackerAddr=0;
 
-Array GChatTexts;
-
 int GUnblockSelect_writefd=0;
 
 UIMainWin GMainWin = {0};
+Array GChatTexts;
 Array GChatWins;
+
+Arena GScratch1;
 
 int main(int argc, char *argv[]) {
     int z;
-    Arena arena = ArenaNew(64*1024);
-    Arena scratch = ArenaNew(4*1024);
+    Arena arena_globals = ArenaNew(4*1024);
+    GScratch1 = ArenaNew(4*1024);
 
     gtk_init(&argc, &argv);
-    init_tmdata(&arena, scratch);
 
     signal(SIGINT, sigint);
 
     if (getlogin() != NULL)
-        GAlias = StringNew(&arena, getlogin());
+        GAlias = StringNew(&arena_globals, getlogin());
     else
-        GAlias = StringNew(&arena, "noname");
+        GAlias = StringNew(&arena_globals, "noname");
     char hostname[HOST_NAME_MAX];
     if (gethostname(hostname, sizeof(hostname)) != -1) {
         hostname[HOST_NAME_MAX-1] = 0;
-        GHostname = StringNew(&arena, hostname);
+        GHostname = StringNew(&arena_globals, hostname);
     } else {
-        GHostname = StringNew(&arena, "nohostname");
+        GHostname = StringNew(&arena_globals, "nohostname");
     }
-    GTrackerHost = StringNew(&arena, TRACKER_HOST);
+    GTrackerHost = StringNew(&arena_globals, TRACKER_HOST);
     GTrackerPort = TRACKER_PORT;
 
     parse_args(argc, argv);
@@ -113,8 +113,12 @@ int main(int argc, char *argv[]) {
     }
     GTrackerAddr = HostAddrFromSockAddr(&tracker_sa);
 
-    GChatTexts = ArrayNew(&arena, 64, sizeof(ChatText));
-    GChatWins = ArrayNew(&arena, 64, sizeof(UIChatWin));
+    // Chat texts should probably be in a sqlite3 database rather than in memory.
+    Arena arena_chats = ArenaNew(64*1024);
+    GChatTexts = ArrayNew(&arena_chats, 64, sizeof(ChatText));
+
+    Arena arena_chatwins = ArenaNew(4*1024);
+    GChatWins = ArrayNew(&arena_chatwins, 64, sizeof(UIChatWin));
 
     pthread_t thread_wait_tcp;
     pthread_create(&thread_wait_tcp, NULL, THREAD_wait_for_tcp_messages, NULL);
@@ -127,7 +131,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    open_mainwin(scratch);
+    open_mainwin(GScratch1);
     gtk_main();
 
     // Break out of select() loop in THREAD_wait_for_tcp_messages().
@@ -630,16 +634,15 @@ void open_mainwin(Arena scratch) {
     gtk_container_add(GTK_CONTAINER(win), framebox);
 
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-    g_signal_connect(peerslb, "row-activated", G_CALLBACK(CB_mainwin_select_peer), NULL);
+    g_signal_connect(peerslb, "row-activated", G_CALLBACK(CB_select_peer), NULL);
 
     GMainWin.win = win;
     GMainWin.peerslb = peerslb;
 
     gtk_widget_show_all(win);
 }
-static void CB_mainwin_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data) {
-    u8 arenabytes[1024];
-    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
+static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data) {
+    Arena scratch = GScratch1;
 
     TMHandle hpeer = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "hpeer"));
     open_chatwin(scratch, hpeer);
@@ -647,10 +650,9 @@ static void CB_mainwin_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer da
 
 // New peer appears, add to peers listbox.
 static gboolean IDLE_peer_online(gpointer data) {
-    u8 arenabytes[512];
-    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
-
+    Arena scratch = GScratch1;
     TMHandle hpeer = GPOINTER_TO_INT(data);
+
     String alias = StringNew0(&scratch);
     int z = get_peer_data(hpeer, &alias, NULL, NULL, NULL);
     if (z == -1)
@@ -684,9 +686,7 @@ static gboolean IDLE_peer_online(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 static gboolean IDLE_peer_offline(gpointer data) {
-    u8 arenabytes[512];
-    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
-
+    Arena scratch = GScratch1;
     TMHandle hpeer = GPOINTER_TO_INT(data);
 
     // Look for existing hpeer row in peers listbox
@@ -809,15 +809,18 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
 }
 static void CB_chatwin_destroy(GtkWidget *w, gpointer data) {
     TMHandle hpeer = GPOINTER_TO_INT(data);
-
     int icw = find_chatwin_from_peer2(hpeer);
-    if (icw != -1)
+    if (icw != -1) {
         ArrayRemove(&GChatWins, icw);
+        if (GChatWins.len == 0) {
+            Arena *arena_chatwins = GChatWins.arena;
+            ArenaReset(arena_chatwins);
+            GChatWins = ArrayNew(arena_chatwins, 64, sizeof(UIChatWin));
+        }
+    }
 }
 static void CB_chatwin_send(GtkWidget *w, gpointer data) {
-    u8 arenabytes[4096];
-    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
-
+    Arena scratch = GScratch1;
     TMHandle hpeer = GPOINTER_TO_INT(data);
 
     String peer_alias = StringNew0(&scratch);
@@ -860,9 +863,7 @@ static void CB_chatwin_send(GtkWidget *w, gpointer data) {
 }
 
 static gboolean IDLE_open_chatwin(gpointer data) {
-    u8 arenabytes[4*1024];
-    Arena scratch = ArenaNewAuto(arenabytes, sizeof(arenabytes));
-
+    Arena scratch = GScratch1;
     TMHandle hpeer = GPOINTER_TO_INT(data);
     open_chatwin(scratch, hpeer);
 
