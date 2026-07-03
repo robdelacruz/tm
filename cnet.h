@@ -17,8 +17,8 @@ typedef struct sockaddr_in SockAddrIPV4;
 // hostaddr = (sin_port << 32) + sin_addr
 typedef u64 HostAddr;
 
-HostAddr HostAddrFromSockAddr(struct sockaddr_in *sa);
-struct sockaddr_in SockAddrFromHostAddr(HostAddr hostaddr);
+HostAddr HostAddrFromSockAddr(SockAddrIPV4 *sa);
+SockAddrIPV4 SockAddrFromHostAddr(HostAddr hostaddr);
 struct in_addr HostAddr_addr(HostAddr hostaddr);
 in_port_t HostAddr_port(HostAddr hostaddr);
 

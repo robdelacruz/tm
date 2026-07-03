@@ -167,7 +167,7 @@ int OpenTcpConnectSocket(int bindport, struct sockaddr *sa, socklen_t sa_len, st
 
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd == -1) {
-        fprintf(stderr, "OpenTcpConnect() socket(): %s\n", strerror(errno));
+        fprintf(stderr, "OpenTcpConnectSocket() socket(): %s\n", strerror(errno));
         return -1;
     }
     int yes=1;
@@ -184,7 +184,7 @@ int OpenTcpConnectSocket(int bindport, struct sockaddr *sa, socklen_t sa_len, st
     bindsa.sin_addr.s_addr = INADDR_ANY;
     z = bind(fd, (struct sockaddr *) &bindsa, sizeof(bindsa));
     if (z == -1) {
-        fprintf(stderr, "OpenTcpConnect() bind(): %s\n", strerror(errno));
+        fprintf(stderr, "OpenTcpConnectSocket() bind(): %s\n", strerror(errno));
         return -1;
     }
 

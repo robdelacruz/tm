@@ -48,8 +48,8 @@ void run_shell(Arena scratch);
 void* THREAD_wait_for_tcp_messages(void *data);
 void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);
 
-int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...);
-int ConnectAndSendMsg(int bindport, char *desthost, int destport, int bufsize, struct timeval *timeout, char *fmt, ...);
+int SendMsg(Arena scratch, int destfd, struct timeval *timeout, char *fmt, ...);
+int ConnectAndSendMsg(Arena scratch, int bindport, SockAddrIPV4 *sa, struct timeval *timeout, char *fmt, ...);
 
 void open_mainwin(Arena scratch);
 void open_chatwin(Arena scratch, TMHandle hpeer);
@@ -69,6 +69,7 @@ u16 GListenPort = LISTEN_PORT;
 String GAlias;
 String GHostname;
 HostAddr GTrackerAddr=0;
+SockAddrIPV4 GTrackerSockAddr;
 
 int GUnblockSelect_writefd=0;
 
@@ -106,12 +107,11 @@ int main(int argc, char *argv[]) {
     printf("TinyMsg listenport: %d sendport: %d user: %s/%s\n", GListenPort, GSendPort, CSTR(GAlias), CSTR(GHostname));
     printf("Using tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
 
-    struct sockaddr_in tracker_sa;
-    if (GetIPV4Address(CSTR(GTrackerHost), GTrackerPort, &tracker_sa) == -1) {
+    if (GetIPV4Address(CSTR(GTrackerHost), GTrackerPort, &GTrackerSockAddr) == -1) {
         printf("Can't resolve tracker's (%s/%d) sockaddr\n", CSTR(GTrackerHost), GTrackerPort);
         exit(1);
     }
-    GTrackerAddr = HostAddrFromSockAddr(&tracker_sa);
+    GTrackerAddr = HostAddrFromSockAddr(&GTrackerSockAddr);
 
     // Chat texts should probably be in a sqlite3 database rather than in memory.
     Arena arena_chats = ArenaNew(64*1024);
@@ -125,7 +125,7 @@ int main(int argc, char *argv[]) {
     //GThread *thread_wait_tcp = g_thread_new("wait_for_tcp_messages", THREAD_wait_for_tcp_messages, NULL);
 
     struct timeval timeout = {2, 0};
-    z = ConnectAndSendMsg(GSendPort, CSTR(GTrackerHost), GTrackerPort, 128, &timeout, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
+    z = ConnectAndSendMsg(GScratch1, GSendPort, &GTrackerSockAddr, &timeout, "%b%s%s%w", KNOCK, CSTR(GAlias), CSTR(GHostname), GListenPort);
     if (z == -1) {
         printf("Error sending knock to tracker %s/%d\n", CSTR(GTrackerHost), GTrackerPort);
         return 1;
@@ -141,7 +141,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "write(): %s\n", strerror(errno));
     assert(z > 0);
 
-    ConnectAndSendMsg(GSendPort, CSTR(GTrackerHost), GTrackerPort, 10, &timeout, "%b", BYE);
+    ConnectAndSendMsg(GScratch1, GSendPort, &GTrackerSockAddr, &timeout, "%b", BYE);
 
     pthread_join(thread_wait_tcp, NULL);
     //g_thread_join(thread_wait_tcp);
@@ -163,8 +163,10 @@ void run_shell(Arena scratch) {
 }
 
 void sigint(int sig) {
+    Arena scratch = GScratch1;
+
     struct timeval timeout = {2, 0};
-    ConnectAndSendMsg(GSendPort, CSTR(GTrackerHost), GTrackerPort, 10, &timeout, "%b", BYE);
+    ConnectAndSendMsg(scratch, GSendPort, &GTrackerSockAddr, &timeout, "%b", BYE);
     printf("Ctrl-C Bye.\n");
     exit(0);
 }
@@ -313,18 +315,12 @@ int execute_command(Arena scratch, char *cmd) {
 
             HostAddr toaddr=0;
             get_peer_data(hpeer, NULL, NULL, NULL, &toaddr);
-            struct timeval timeout = {2,0};
-            int peerfd = OpenTcpConnectSocket2(GSendPort, toaddr, &timeout);
-            if (peerfd == -1) {
-                printf("Can't connect to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
-                return 0;
-            }
-            Buffer sendbuf = BufferNew(&scratch, 255);
-            NetPackLen(&sendbuf, "%b%s", CHATTEXT, CSTR(chattext));
-            if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
-                printf("Error sending to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
+            SockAddrIPV4 to_sa = SockAddrFromHostAddr(toaddr);
 
-            ShutdownSocket(peerfd);
+            struct timeval timeout = {2,0};
+            int z = ConnectAndSendMsg(scratch, GSendPort, &to_sa, &timeout, "%b%s", CHATTEXT, CSTR(chattext));
+            if (z == -1)
+                printf("Error sending to peer %s (%s/%d)\n", CSTR(sendalias), HostAddr_ipaddress(toaddr), ntohs(HostAddr_port(toaddr)));
             return 0;
         }
     }
@@ -566,32 +562,30 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
     }
 }
 
-int SendMsgV(int destfd, int bufsize, struct timeval *timeout, char *fmt, va_list args) {
-    char buf[bufsize];
-    Buffer sendbuf = BUFFER(buf, bufsize);
+static int SendMsgV(Arena scratch, int destfd, struct timeval *timeout, char *fmt, va_list args) {
+    Buffer sendbuf = BufferNew(&scratch, 256);
     NetPackLenV(&sendbuf, fmt, args);
-
     return NetSend_wait_until_complete(destfd, &sendbuf, timeout);
 }
-int SendMsg(int destfd, int bufsize, struct timeval *timeout, char *fmt, ...) {
+int SendMsg(Arena scratch, int destfd, struct timeval *timeout, char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    int z = SendMsgV(destfd, bufsize, timeout, fmt, args);
+    int z = SendMsgV(scratch, destfd, timeout, fmt, args);
     va_end(args);
     return z;
 }
 
-int ConnectAndSendMsg(int bindport, char *desthost, int destport, int bufsize, struct timeval *timeout, char *fmt, ...) {
-    int destfd = OpenTcpConnectSocket3(bindport, desthost, destport, timeout);
+int ConnectAndSendMsg(Arena scratch, int bindport, SockAddrIPV4 *sa, struct timeval *timeout, char *fmt, ...) {
+    int destfd = OpenTcpConnectSocket(bindport, (struct sockaddr *) sa, sizeof(SockAddrIPV4), timeout);
     if (destfd == -1) {
-        printf("Can't connect to host %s/%d\n", desthost, destport);
+        printf("Can't connect to host %s\n", SockAddr_ipaddress((struct sockaddr *) sa));
         return -1;
     }
     va_list args;
     va_start(args, fmt);
-    int z = SendMsgV(destfd, bufsize, timeout, fmt, args);
+    int z = SendMsgV(scratch, destfd, timeout, fmt, args);
     if (z == -1)
-        printf("Error sending to host %s/%d\n", desthost, destport);
+        printf("Error sending to host %s\n", SockAddr_ipaddress((struct sockaddr *) sa));
     va_end(args);
 
     ShutdownSocket(destfd);
@@ -834,19 +828,11 @@ static void CB_chatwin_send(GtkWidget *w, gpointer data) {
     if (cw == NULL)
         return;
 
+    SockAddrIPV4 peer_to_sa = SockAddrFromHostAddr(peer_toaddr);
     struct timeval timeout = {2,0};
-    int peerfd = OpenTcpConnectSocket2(GSendPort, peer_toaddr, &timeout);
-    if (peerfd == -1) {
-        printf("Can't connect to peer (%s/%d)\n", HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
-        return;
-    }
-
-    char bufbytes[4096];
-    Buffer sendbuf = BUFFER(bufbytes, sizeof(bufbytes));
-    NetPackLen(&sendbuf, "%b%s", CHATTEXT, GtkTextView_gettext(GTK_TEXT_VIEW(cw->sendtext)));
-    if (NetSend_wait_until_complete(peerfd, &sendbuf, &timeout) == -1)
+    z = ConnectAndSendMsg(scratch, GSendPort, &peer_to_sa, &timeout, "%b%s", CHATTEXT, GtkTextView_gettext(GTK_TEXT_VIEW(cw->sendtext)));
+    if (z == -1)
         printf("Error sending to peer (%s/%d)\n", HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
-    ShutdownSocket(peerfd);
 
     ChatText ct;
     ct.timestamp = time(NULL);
