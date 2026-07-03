@@ -38,6 +38,10 @@ typedef struct {
     GtkWidget *win;
     GtkWidget *msghistorylb;
     GtkWidget *sendtext;
+    GtkWidget *scrolltext;
+    GtkWidget *statusbar;
+    guint statusbar_ctxid;
+    GtkWidget *sendbtn;
 } UIChatWin;
 
 void sigint(int sig);
@@ -53,6 +57,10 @@ int ConnectAndSendMsg(Arena scratch, int bindport, SockAddrIPV4 *sa, struct time
 
 void open_mainwin(Arena scratch);
 void open_chatwin(Arena scratch, TMHandle hpeer);
+
+UIChatWin *find_chatwin_from_peer(TMHandle hpeer);
+int find_chatwin_from_peer2(TMHandle hpeer);
+void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, String peer_alias, String peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr);
 
 static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data);
 static void CB_chatwin_destroy(GtkWidget *w, gpointer data);
@@ -700,6 +708,14 @@ static gboolean IDLE_peer_offline(gpointer data) {
     if (updaterow != NULL)
         gtk_widget_destroy(updaterow);
 
+    UIChatWin *cw = find_chatwin_from_peer(hpeer);
+    if (cw) {
+        // Disable send text functionality
+        gtk_widget_set_sensitive(cw->scrolltext, FALSE);
+        gtk_widget_set_sensitive(cw->sendbtn, FALSE);
+        gtk_statusbar_push(GTK_STATUSBAR(cw->statusbar), cw->statusbar_ctxid, "Peer is offline");
+    }
+
     return G_SOURCE_REMOVE;
 }
 
@@ -759,7 +775,7 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     // Create new chat window for hpeer
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(win), 320,480);
-    gtk_container_set_border_width(GTK_CONTAINER(win), 10);
+    //gtk_container_set_border_width(GTK_CONTAINER(win), 10);
     String s = StringFormat(&scratch, "%s chat", CSTR(peer_alias));
     gtk_window_set_title(GTK_WINDOW(win), CSTR(s));
 
@@ -780,12 +796,23 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     GtkWidget *hbox = gtk_hbox_new(FALSE, 0);
     gtk_box_pack_end(GTK_BOX(hbox), sendbtn, FALSE, FALSE, 0);
 
+    GtkWidget *statusbar = gtk_statusbar_new();
+    guint statusbar_ctxid = gtk_statusbar_get_context_id(GTK_STATUSBAR(statusbar), "sb");
+    String introtext = StringFormat(&scratch, "Chatting with %s", CSTR(peer_alias));
+    gtk_statusbar_push(GTK_STATUSBAR(statusbar), statusbar_ctxid, CSTR(introtext));
+
     GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
+    set_widget_margins(contentbox, 10,10,5,5);
     gtk_box_pack_start(GTK_BOX(contentbox), scrolllb, TRUE, TRUE, 10);
     gtk_box_pack_start(GTK_BOX(contentbox), sendcaption, FALSE, FALSE, 5);
     gtk_box_pack_start(GTK_BOX(contentbox), scrolltext, FALSE, FALSE, 3);
     gtk_box_pack_start(GTK_BOX(contentbox), hbox, FALSE, FALSE, 3);
-    gtk_container_add(GTK_CONTAINER(win), contentbox);
+
+    GtkWidget *framebox = gtk_vbox_new(FALSE, 0);
+//    gtk_box_pack_start(GTK_BOX(framebox), menubar, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(framebox), contentbox, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(framebox), statusbar, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(win), framebox);
 
     refresh_msghistory(scratch, msghistorylb, GChatTexts, peer_alias, peer_hostname, peer_fromaddr, peer_toaddr);
 
@@ -797,6 +824,10 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     new_cw.win = win;
     new_cw.msghistorylb = msghistorylb;
     new_cw.sendtext = sendtext;
+    new_cw.scrolltext = scrolltext;
+    new_cw.statusbar = statusbar;
+    new_cw.statusbar_ctxid = statusbar_ctxid;
+    new_cw.sendbtn = sendbtn;
     ArrayAppend(&GChatWins, &new_cw);
 
     gtk_widget_show_all(win);
@@ -831,8 +862,11 @@ static void CB_chatwin_send(GtkWidget *w, gpointer data) {
     SockAddrIPV4 peer_to_sa = SockAddrFromHostAddr(peer_toaddr);
     struct timeval timeout = {2,0};
     z = ConnectAndSendMsg(scratch, GSendPort, &peer_to_sa, &timeout, "%b%s", CHATTEXT, GtkTextView_gettext(GTK_TEXT_VIEW(cw->sendtext)));
-    if (z == -1)
-        printf("Error sending to peer (%s/%d)\n", HostAddr_ipaddress(peer_toaddr), ntohs(HostAddr_port(peer_toaddr)));
+    if (z == -1) {
+        String err = StringFormat(&scratch, "Send error: %s\n", strerror(errno));
+        gtk_statusbar_push(GTK_STATUSBAR(cw->statusbar), cw->statusbar_ctxid, CSTR(err));
+        return;
+    }
 
     ChatText ct;
     ct.timestamp = time(NULL);
