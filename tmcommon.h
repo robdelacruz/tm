@@ -39,10 +39,13 @@ typedef struct {
     String text;
 } ChatTextMsg;
 
+#define ALIAS_SIZE 16
+#define HOSTNAME_SIZE 16
+
 typedef struct {
     TMHandle hpeer;
-    String alias;
-    String hostname;
+    char alias[ALIAS_SIZE+1];
+    char hostname[HOSTNAME_SIZE+1];
     HostAddr fromaddr;
     HostAddr toaddr;
 } Peer;
@@ -77,7 +80,7 @@ TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr to
 void destroy_peer(TMHandle hpeer);
 TMHandle find_peer_fromaddr(HostAddr fromaddr);
 TMHandle find_peer_alias(char *alias);
-int get_peer_data(TMHandle hpeer, String *alias, String *hostname, HostAddr *fromaddr, HostAddr *toaddr);
+int get_peer_data(TMHandle hpeer, char *alias, char *hostname, HostAddr *pfromaddr, HostAddr *ptoaddr);
 
 int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr dest_hostaddr, Array *socketctxs, fd_set *writefds, int *maxfd);
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd);

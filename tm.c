@@ -60,7 +60,7 @@ void open_chatwin(Arena scratch, TMHandle hpeer);
 
 UIChatWin *find_chatwin_from_peer(TMHandle hpeer);
 int find_chatwin_from_peer2(TMHandle hpeer);
-void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, String peer_alias, String peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr);
+void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, char *peer_alias, char *peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr);
 
 static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data);
 static void CB_chatwin_destroy(GtkWidget *w, gpointer data);
@@ -554,10 +554,10 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
             printf("** CHATTEXT from unknown text: %s fromaddr: %s/%d **\n", CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
             return;
         }
-        String alias = StringNew0(&scratch);
-        String hostname = StringNew0(&scratch);
-        get_peer_data(hpeer, &alias, &hostname, NULL, NULL);
-        printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", CSTR(alias), CSTR(hostname), CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
+        char alias[ALIAS_SIZE+1];
+        char hostname[HOSTNAME_SIZE+1];
+        get_peer_data(hpeer, alias, hostname, NULL, NULL);
+        printf("** CHATTEXT from: %s/%s text: %s fromaddr: %s/%d **\n", alias, hostname, CSTR(text), HostAddr_ipaddress(fromaddr), ntohs(HostAddr_port(fromaddr)));
 
         ChatText ct;
         ct.timestamp = time(NULL);
@@ -655,8 +655,8 @@ static gboolean IDLE_peer_online(gpointer data) {
     Arena scratch = GScratch1;
     TMHandle hpeer = GPOINTER_TO_INT(data);
 
-    String alias = StringNew0(&scratch);
-    int z = get_peer_data(hpeer, &alias, NULL, NULL, NULL);
+    char alias[ALIAS_SIZE+1];
+    int z = get_peer_data(hpeer, alias, NULL, NULL, NULL);
     if (z == -1)
         return G_SOURCE_REMOVE;
 
@@ -680,7 +680,7 @@ static gboolean IDLE_peer_online(gpointer data) {
 //        gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(updaterow), FALSE);
     }
 
-    gtk_container_add(GTK_CONTAINER(updaterow), create_label2(CSTR(alias)));
+    gtk_container_add(GTK_CONTAINER(updaterow), create_label2(alias));
     g_object_set_data(G_OBJECT(updaterow), "hpeer", GINT_TO_POINTER(hpeer));
     gtk_container_add(GTK_CONTAINER(GMainWin.peerslb), updaterow);
 
@@ -735,7 +735,7 @@ int find_chatwin_from_peer2(TMHandle hpeer) {
     }
     return -1;
 }
-void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, String peer_alias, String peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr) {
+void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, char *peer_alias, char *peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr) {
     clear_controls(msglb);
 
     for (int i=0; i < chattexts.len; i++) {
@@ -743,7 +743,7 @@ void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, String
         ChatText *ct = ArrayItem(chattexts, i);
         if (ct->fromaddr == peer_fromaddr) {
             // Received chat from peer
-            String markuptext = StringFormat(&tmpscratch, "<span color='blue' weight='bold'>%s</span>:\n%s", CSTR(peer_alias), CSTR(ct->text));
+            String markuptext = StringFormat(&tmpscratch, "<span color='blue' weight='bold'>%s</span>:\n%s", peer_alias, CSTR(ct->text));
             GtkListBox_append(msglb, CSTR(markuptext));
         } else if (ct->toaddr == peer_toaddr) {
             // Sent chat to peer
@@ -756,10 +756,10 @@ void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, String
 void open_chatwin(Arena scratch, TMHandle hpeer) {
     int z;
 
-    String peer_alias = StringNew0(&scratch);
-    String peer_hostname = StringNew0(&scratch);
+    char peer_alias[ALIAS_SIZE+1];
+    char peer_hostname[HOSTNAME_SIZE+1];
     HostAddr peer_fromaddr, peer_toaddr;
-    z = get_peer_data(hpeer, &peer_alias, &peer_hostname, &peer_fromaddr, &peer_toaddr);
+    z = get_peer_data(hpeer, peer_alias, peer_hostname, &peer_fromaddr, &peer_toaddr);
     if (z == -1)
         return;
 
@@ -776,7 +776,7 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(win), 320,480);
     //gtk_container_set_border_width(GTK_CONTAINER(win), 10);
-    String s = StringFormat(&scratch, "%s chat", CSTR(peer_alias));
+    String s = StringFormat(&scratch, "%s chat", peer_alias);
     gtk_window_set_title(GTK_WINDOW(win), CSTR(s));
 
     GtkWidget *msghistorylb = gtk_list_box_new();
@@ -798,7 +798,7 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
 
     GtkWidget *statusbar = gtk_statusbar_new();
     guint statusbar_ctxid = gtk_statusbar_get_context_id(GTK_STATUSBAR(statusbar), "sb");
-    String introtext = StringFormat(&scratch, "Chatting with %s", CSTR(peer_alias));
+    String introtext = StringFormat(&scratch, "Chatting with %s", peer_alias);
     gtk_statusbar_push(GTK_STATUSBAR(statusbar), statusbar_ctxid, CSTR(introtext));
 
     GtkWidget *contentbox = gtk_vbox_new(FALSE, 0);
@@ -848,10 +848,10 @@ static void CB_chatwin_send(GtkWidget *w, gpointer data) {
     Arena scratch = GScratch1;
     TMHandle hpeer = GPOINTER_TO_INT(data);
 
-    String peer_alias = StringNew0(&scratch);
-    String peer_hostname = StringNew0(&scratch);
+    char peer_alias[ALIAS_SIZE+1];
+    char peer_hostname[HOSTNAME_SIZE+1];
     HostAddr peer_fromaddr=0, peer_toaddr=0;
-    int z = get_peer_data(hpeer, &peer_alias, &peer_hostname, &peer_fromaddr, &peer_toaddr);
+    int z = get_peer_data(hpeer, peer_alias, peer_hostname, &peer_fromaddr, &peer_toaddr);
     if (z == -1)
         return;
 

@@ -6,7 +6,7 @@ GTK_LIBS=`pkg-config --libs gtk+-3.0`
 
 all: tm t t2
 
-t: t.c clib.c
+t: t.c clib.c cnet.c
 	gcc $(CFLAGS) -o $@ $^ $(LIBS)
 
 t2: t2.c clib.c cnet.c

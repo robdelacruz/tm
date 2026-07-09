@@ -13,9 +13,15 @@
 #include <netinet/in.h>
 
 #include "clib.h"
+#include "cnet.h"
+#include "tmcommon.h"
 
 int main(int argc, char *argv[]) {
-    printf("hello\n");
+    Peer p1;
+    Peer *p2;
+
+    printf("sizeof(p1.alias) = %ld\n", sizeof(p1.alias));
+    printf("sizeof(p2->alias) = %ld\n", sizeof(p2->alias));
 
     return 0;
 }

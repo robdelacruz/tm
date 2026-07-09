@@ -42,6 +42,18 @@ u16 hash16(char *k, int size) {
     return hash;
 }
 
+void staticstr_copy(char *dest, int dest_size, char *src) {
+    if (dest_size == 0)
+        return;
+
+    int num_bytes_to_copy = strlen(src);
+    if (num_bytes_to_copy > dest_size-1)
+        num_bytes_to_copy = dest_size-1;
+
+    memcpy(dest, src, num_bytes_to_copy);
+    dest[num_bytes_to_copy] = 0;
+}
+
 Arena ArenaNew(u32 cap) {
     Arena a;
     if (cap == 0)
