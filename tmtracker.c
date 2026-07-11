@@ -248,6 +248,8 @@ void handle_msg(Arena scratch, int fd, HostAddr fromaddr, char *msgbytes, u16 ms
         Array peers = get_peers_array();
         for (int i=0; i < peers.len; i++) {
             Peer *p = ArrayItem(peers, i);
+            if (p->active == 0)
+                continue;
 
             BufferClear(&sendbuf);
             NetPackLen(&sendbuf, "%b%s%s%L%L", PEER_ONLINE, p->alias, p->hostname, p->fromaddr, p->toaddr);

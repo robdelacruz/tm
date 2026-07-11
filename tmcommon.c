@@ -84,15 +84,24 @@ Array get_peers_array() {
 void print_peers() {
     assert(GPeers.cap != 0);
 
-    if (GPeers.len == 0) {
+    int num_active_peers = 0;
+    for (int i=0; i < GPeers.len; i++) {
+        Peer *p = ArrayItem(GPeers, i);
+        if (p->active == 0)
+            continue;
+        num_active_peers++;
+    }
+    if (num_active_peers == 0) {
         printf("Peers (0)\n");
         return;
     }
+    printf("Peers (%d):\n", num_active_peers);
 
-    printf("Peers (%d):\n", GPeers.len);
     char *fromaddr_str, *toaddr_str;
     for (int i=0; i < GPeers.len; i++) {
         Peer *p = ArrayItem(GPeers, i);
+        if (p->active == 0)
+            continue;
 
         fromaddr_str = strdup(HostAddr_ipaddress(p->fromaddr));
         toaddr_str = strdup(HostAddr_ipaddress(p->toaddr));
@@ -109,6 +118,7 @@ Peer Peer_new(Arena *arena, char *alias, char *hostname, HostAddr fromaddr, Host
     staticstr_copy(peer.hostname, sizeof(peer.hostname), hostname);
     peer.fromaddr = fromaddr;
     peer.toaddr = toaddr;
+    peer.active = 1;
     return peer;
 }
 void Peer_replace(Peer *peer, char *alias, char *hostname, HostAddr fromaddr, HostAddr toaddr) {
@@ -116,6 +126,7 @@ void Peer_replace(Peer *peer, char *alias, char *hostname, HostAddr fromaddr, Ho
     staticstr_copy(peer->hostname, sizeof(peer->hostname), hostname);
     peer->fromaddr = fromaddr;
     peer->toaddr = toaddr;
+    peer->active = 1;
 }
 TMHandle create_peer(char *alias, char *hostname, HostAddr fromaddr, HostAddr toaddr) {
     if (GPeers.cap == 0) {
@@ -142,9 +153,10 @@ void destroy_peer(TMHandle hpeer) {
     for (int i=0; i < GPeers.len; i++) {
         Peer *p = ArrayItem(GPeers, i);
         if (p->hpeer == hpeer) {
-            ArrayRemove(&GPeers, i);
-            if (hpeer == GNextPeerHandle-1)
-                GNextPeerHandle = hpeer;
+            p->active = 0;
+            //ArrayRemove(&GPeers, i);
+            //if (hpeer == GNextPeerHandle-1)
+            //    GNextPeerHandle = hpeer;
             return;
         }
     }
@@ -234,6 +246,8 @@ int send_msg_to_hostaddr(Arena scratch, char *msgbytes, u16 msglen, HostAddr toa
 void send_msg_to_peers(Arena scratch, char *msgbytes, u16 msglen, Array *socketctxs, fd_set *writefds, int *maxfd) {
     for (int i=0; i < GPeers.len; i++) {
         Peer *p = ArrayItem(GPeers, i);
+        if (p->active == 0)
+            continue;
         send_msg_to_hostaddr(scratch, msgbytes, msglen, p->toaddr, socketctxs, writefds, maxfd);
     }
 }

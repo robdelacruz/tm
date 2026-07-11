@@ -48,6 +48,7 @@ typedef struct {
     char hostname[HOSTNAME_SIZE+1];
     HostAddr fromaddr;
     HostAddr toaddr;
+    u8 active;
 } Peer;
 
 typedef struct {
