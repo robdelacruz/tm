@@ -67,6 +67,7 @@ int find_chatwin_from_peer2(TMHandle hpeer);
 void refresh_msghistory(Arena scratch, GtkWidget *msglb, Array chattexts, char *peer_alias, char *peer_hostname, HostAddr peer_fromaddr, HostAddr peer_toaddr);
 
 static void CB_select_peer(GtkWidget *w, GtkListBoxRow *row, gpointer data);
+static gboolean CB_chatwin_delete(GtkWidget *w, GdkEvent *e, gpointer data);
 static void CB_chatwin_destroy(GtkWidget *w, gpointer data);
 static void CB_chatwin_send(GtkWidget *w, gpointer data);
 
@@ -706,7 +707,7 @@ static gboolean IDLE_peer_online(gpointer data) {
         gtk_statusbar_push(GTK_STATUSBAR(cw->statusbar), cw->statusbar_ctxid, CSTR(status));
 
         // Update statusbar
-        String markuptext = StringFormat(&scratch, "<span color='darkgrey'>%s is online</span>", alias);
+        String markuptext = StringFormat(&scratch, "<span color='blue'>%s is online</span>", alias);
         GtkListBox_append(cw->msghistorylb, CSTR(markuptext));
         gtk_widget_show_all(cw->msghistorylb);
     }
@@ -811,7 +812,6 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     // Show existing chatwin if previously created
     UIChatWin *cw = find_chatwin_from_peer(hpeer);
     if (cw) {
-        refresh_msghistory(scratch, cw->msghistorylb, GChatTexts, peer_alias, peer_hostname, peer_fromaddr, peer_toaddr);
         gtk_widget_show_all(cw->win);
         gtk_window_present(GTK_WINDOW(cw->win));
         return;
@@ -820,11 +820,12 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     // Create new chat window for hpeer
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(win), 320,480);
-    //gtk_container_set_border_width(GTK_CONTAINER(win), 10);
+    gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER_ON_PARENT);
     String s = StringFormat(&scratch, "%s chat", peer_alias);
     gtk_window_set_title(GTK_WINDOW(win), CSTR(s));
 
     GtkWidget *msghistorylb = gtk_list_box_new();
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(msghistorylb), FALSE);
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(msghistorylb), GTK_SELECTION_NONE);
     GtkWidget *scrolllb = gtk_scrolled_window_new(NULL, NULL);
     gtk_container_add(GTK_CONTAINER(scrolllb), msghistorylb);
@@ -854,7 +855,6 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     gtk_box_pack_start(GTK_BOX(contentbox), hbox, FALSE, FALSE, 3);
 
     GtkWidget *framebox = gtk_vbox_new(FALSE, 0);
-//    gtk_box_pack_start(GTK_BOX(framebox), menubar, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(framebox), contentbox, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(framebox), statusbar, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(win), framebox);
@@ -862,7 +862,8 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     refresh_msghistory(scratch, msghistorylb, GChatTexts, peer_alias, peer_hostname, peer_fromaddr, peer_toaddr);
 
     g_signal_connect(sendbtn, "clicked", G_CALLBACK(CB_chatwin_send), GINT_TO_POINTER(hpeer));
-    g_signal_connect(win, "destroy", G_CALLBACK(CB_chatwin_destroy), GINT_TO_POINTER(hpeer));
+    //g_signal_connect(win, "destroy", G_CALLBACK(CB_chatwin_destroy), GINT_TO_POINTER(hpeer));
+    g_signal_connect(win, "delete-event", G_CALLBACK(CB_chatwin_delete), GINT_TO_POINTER(hpeer));
 
     UIChatWin new_cw;
     new_cw.hpeer = hpeer;
@@ -876,6 +877,11 @@ void open_chatwin(Arena scratch, TMHandle hpeer) {
     ArrayAppend(&GChatWins, &new_cw);
 
     gtk_widget_show_all(win);
+}
+static gboolean CB_chatwin_delete(GtkWidget *w, GdkEvent *e, gpointer data) {
+    TMHandle hpeer = GPOINTER_TO_INT(data);
+    gtk_widget_hide(w);
+    return TRUE;
 }
 static void CB_chatwin_destroy(GtkWidget *w, gpointer data) {
     TMHandle hpeer = GPOINTER_TO_INT(data);
